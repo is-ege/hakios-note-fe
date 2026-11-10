@@ -242,6 +242,7 @@ static const char *nufs_pname(uint32_t part);
 /* own mode (ufs_native=4): the table is this kernel's, the loader serves nothing */
 static bool ufs_own;
 static int ufs_own_write_part = -1;             /* the partition ufs_native_write= names; -1: none */
+static int ufs_own_data_part = -1;              /* ... when it is UFS_DATA_PART: /dev/ufs_NAME_data, the data volume's */
 static struct loader_block *ufs_own_table;
 
 static LCK_GRP_DECLARE(ufs_lck_grp, "hakios-ufs");
@@ -816,16 +817,47 @@ ufs_write_restore(void)
 
 /* ---- the data volume: darwin from UFS_WRITE_FIRST on, or USERDATA from its first block ---- */
 
+/* The data volume's partition and its first block: the loader's offer, or own mode's window (all of the partition) */
+static int
+ufs_data_part(void)
+{
+	return ufs_own ? ufs_own_data_part : ufs_write_part;
+}
+
+static uint64_t
+ufs_data_first(void)
+{
+	return ufs_own ? 0 : ufs_write_first;
+}
+
 static bool
 ufs_is_data(dev_t dev)
 {
-	return ufs_ready && ufs_write_part >= 0 && (uint32_t)minor(dev) == UFS_DATA_MINOR;
+	return ufs_ready && ufs_data_part() >= 0 && (uint32_t)minor(dev) == UFS_DATA_MINOR;
 }
 
 static uint64_t
 ufs_data_bytes(void)
 {
-	return ufs_part_bytes((uint32_t)ufs_write_part) - ufs_write_first * 4096;
+	return ufs_part_bytes((uint32_t)ufs_data_part()) - ufs_data_first() * 4096;
+}
+
+static int ufs_own_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len);
+static uint32_t ufs_data_op(void);
+
+/* whole blocks of the data volume's partition: own mode's window, or through the loader */
+static int
+ufs_data_write(uint64_t offset, const uint8_t *src, uint64_t len)
+{
+	int error;
+
+	if (!ufs_own) {
+		return ufs_write(ufs_data_op(), (uint32_t)ufs_write_part, offset, src, len);
+	}
+	lck_mtx_lock(&ufs_write_mtx);
+	error = ufs_own_write((uint32_t)ufs_own_data_part, offset, src, len);
+	lck_mtx_unlock(&ufs_write_mtx);
+	return error;
 }
 
 /*
@@ -844,8 +876,8 @@ ufs_data_flush(void)
 {
 	int error;
 
-	if (ufs_nufs_on) {
-		/* ufs=3: the device's cache, through this kernel's own driver (SYNCHRONIZE CACHE to USERDATA's unit) */
+	if (ufs_nufs_on || ufs_own) {
+		/* ufs=3, own mode: the device's cache, through this kernel's own driver (SYNCHRONIZE CACHE to USERDATA's unit) */
 		lck_mtx_lock(&ufs_write_mtx);
 		error = ufshc_sync();
 		lck_mtx_unlock(&ufs_write_mtx);
@@ -871,7 +903,7 @@ ufs_data_flush(void)
 static int
 ufs_data_io(bool write, uint64_t offset, uint8_t *p, uint64_t len)
 {
-	uint64_t base = ufs_write_first * 4096, size = ufs_data_bytes();
+	uint64_t base = ufs_data_first() * 4096, size = ufs_data_bytes();
 	uint8_t *bounce;
 	int error = 0;
 
@@ -879,11 +911,11 @@ ufs_data_io(bool write, uint64_t offset, uint8_t *p, uint64_t len)
 		return EINVAL;
 	}
 	if (!write) {
-		return ufs_read((uint32_t)ufs_write_part, base + offset, p, len);
+		return ufs_read((uint32_t)ufs_data_part(), base + offset, p, len);
 	}
 	lck_mtx_lock(&ufs_data_mtx);
 	if (offset % 4096 == 0 && len % 4096 == 0) {
-		error = ufs_write(ufs_data_op(), (uint32_t)ufs_write_part, base + offset, p, len);
+		error = ufs_data_write(base + offset, p, len);
 		lck_mtx_unlock(&ufs_data_mtx);
 		return error;
 	}
@@ -900,10 +932,10 @@ ufs_data_io(bool write, uint64_t offset, uint8_t *p, uint64_t len)
 			span = ufs_buffer_size;
 		}
 		take = MIN(span - skip, len);
-		error = ufs_read((uint32_t)ufs_write_part, base + first, bounce, span);
+		error = ufs_read((uint32_t)ufs_data_part(), base + first, bounce, span);
 		if (error == 0) {
 			memcpy(bounce + skip, p, (size_t)take);
-			error = ufs_write(ufs_data_op(), (uint32_t)ufs_write_part, base + first, bounce, span);
+			error = ufs_data_write(base + first, bounce, span);
 		}
 		offset += take;
 		p += take;
@@ -2363,6 +2395,13 @@ ufs_own_init(uint32_t mode)
 			printf("ufs: own: /dev/rufs_%s takes writes (whole blocks, LUN %u blocks %llu..%llu); everything else of the "
 			    "storage is read only\n", wname, ufs_lun[part], ufs_page->part[part].start_lba,
 			    ufs_page->part[part].start_lba + ufs_page->part[part].blocks - 1);
+			if (strncmp(wname, UFS_DATA_PART, sizeof(UFS_DATA_PART)) == 0 &&
+			    devfs_make_node(makedev(ufs_bmajor, UFS_DATA_MINOR), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640,
+			    "ufs_%s_data", wname) != NULL) {
+				ufs_own_data_part = (int)part;
+				printf("ufs: own: /dev/ufs_%s_data: the same %llu MB as a block device, for the data volume; writes "
+				    "flushed when the file system asks\n", wname, ufs_data_bytes() >> 20);
+			}
 		}
 	}
 	/* ufs_native_test=1: own mode's test at start: the refusals, and writes put back (2: one block left written) */
