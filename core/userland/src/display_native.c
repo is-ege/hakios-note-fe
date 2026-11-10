@@ -6,7 +6,9 @@
 #include <CoreGraphics/CGImage.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <execinfo.h>
 #include <fcntl.h>
+#include <mach/mach_time.h>
 #include <math.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
@@ -34,11 +36,13 @@ static const struct canvas { double width, height, grid_width, grid_height; } ca
 	{ 1440, 2960, 396, 814 },       /* the S9+'s panel */
 	{ 1080, 2220, 396, 814 },
 	{ 1188, 2442, 396, 814 },       /* the S9+'s: 3 pixels a point */
-	{ 1440, 2560, 450, 800 },       /* the Note FE's panel, 16:9: 3.2 pixels a point */
-	/* ... drawn smaller and enlarged to the panel, 2.5 pixels a point. Not Samsung's FHD, 1080 x 1920: that is the
-	 * iPhone Plus's panel, for which CoreAnimation draws 1242 x 2208 (seen on the phone: a black screen). */
-	{ 1125, 2000, 450, 800 },
-	{ 900, 1600, 450, 800 },        /* ... 2 pixels a point */
+	{ 1440, 2560, 450, 800 },       /* the Note FE's panel, 16:9: 3.2 pixels a point (its keyboard: see below) */
+	/* ... drawn smaller and enlarged to the panel, 414 points wide (the iPhone 8 Plus's 414 x 736), 2.5 and 2 pixels a
+	 * point. 414 is the width UIKit's keyboard has for this class of screen: at 450 a keyplane change resized the keyboard
+	 * to 414, which rebuilt it on its first keyplane (".?123" did nothing in any application). Not Samsung's FHD,
+	 * 1080 x 1920: that is the iPhone Plus's panel, for which CoreAnimation draws 1242 x 2208 (a black screen). */
+	{ 1035, 1840, 414, 736 },
+	{ 828, 1472, 414, 736 },
 };
 static const struct canvas *canvas;
 static BOOL integral_point_grid;
@@ -267,6 +271,11 @@ install_native_display(void)
 		if (canvases[i].width == pixels_wide && canvases[i].height == pixels_high) canvas = &canvases[i];
 	if (canvas == NULL) return;
 	integral_point_grid = canvas->grid_width && mode == 2;
+	/* kbtrace=1 in an application (INJECT names it): the keyboard's observation and nothing else */
+	if (strstr(args, " kbtrace=1") != NULL && strcmp(getprogname(), "SpringBoard") != 0 && strcmp(getprogname(), "backboardd") != 0) {
+		install_native_keyboard_trace();
+		return;
+	}
 	say("fb_nativeui: %s: constructor entered\n", getprogname());
 	if (dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW) == NULL) {
 		say("fb_nativeui: %s: FrontBoardServices unavailable\n", getprogname());

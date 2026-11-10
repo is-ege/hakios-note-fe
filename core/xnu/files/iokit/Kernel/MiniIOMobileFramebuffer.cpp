@@ -246,8 +246,8 @@ nativeArtworkIdentity(void)
 {
 	bool supported = ((gFBWidth == 1368 || gFBWidth == 1440) && gFBHeight == 2960) ||
 	    (gFBWidth == 1080 && gFBHeight == 2220) || (gFBWidth == 1188 && gFBHeight == 2442) ||
-	    (gFBWidth == 1440 && gFBHeight == 2560) || (gFBWidth == 1125 && gFBHeight == 2000) ||
-	    (gFBWidth == 900 && gFBHeight == 1600);
+	    (gFBWidth == 1440 && gFBHeight == 2560) || (gFBWidth == 1035 && gFBHeight == 1840) ||
+	    (gFBWidth == 828 && gFBHeight == 1472);
 	if (!gFBNativeUI || !supported || gFBScale != 0) {
 		return false;
 	}
