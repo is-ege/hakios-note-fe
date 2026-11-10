@@ -1,7 +1,7 @@
 /*
- * mali_test: the Galaxy S9's GPU from a program, without Mesa -- what HakiosMali (drivers/gpu/hakios.mali.cpp) does
- * for a client, one request at a time, so that a run of the phone says whether the kernel's half works before Mesa's
- * panfrost is asked to draw through it.
+ * mali_test: the Mali (the Galaxy S9's G72, the Note FE's T880) from a program, without Mesa -- what HakiosMali
+ * (drivers/gpu/hakios.mali.cpp) does for a client, one request at a time, so that a run of the phone says whether the
+ * kernel's half works before Mesa's panfrost is asked to draw through it.
  *
  *   1  open HakiosMali (there only once the kernel's bring-up has reached its last step: mali=9)
  *   2  its parameters: which GPU, its cores and its MMU, as panfrost asks for them (GET_PARAM)
@@ -13,7 +13,9 @@
  *
  * The job is the one the kernel's step 8 runs from inside (hakios.mali.c, run_write_job()): a job header with the type
  * 2 (write value) and 64-bit pointers at +0x10, the target at +0x20, the kind of value (6: a 32-bit immediate) at
- * +0x28, the value at +0x30. Written through the buffer's write-combining mapping, it is in memory for the GPU.
+ * +0x28, the value at +0x30. A Midgard GPU (the Note FE's T880, GPU_PROD_ID 0x880) has no immediate values: there the
+ * kind is 3 (zero), written over a pattern put there first. Written through the buffer's write-combining mapping, it is
+ * in memory for the GPU.
  *
  *   mali_test          all of it, once
  *   mali_test N        the job N times, and how long a round trip takes
@@ -21,6 +23,7 @@
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +77,7 @@ main(int argc, char **argv)
 	mach_vm_address_t base = 0;
 	mach_vm_size_t mapped = 0;
 	unsigned good = 0;
+	bool midgard = false;
 	kern_return_t kr;
 
 	if (argc > 1 && rounds == 0) {
@@ -94,6 +98,7 @@ main(int argc, char **argv)
 		struct get_param p = { .param = params[i].param };
 
 		kr = request(kGetParam, &p, sizeof(p));
+		midgard |= params[i].param == 0 && kr == KERN_SUCCESS && p.value == 0x880;
 		printf("mali_test: 2: %-20s %s %#llx\n", params[i].name, kr ? "refused," : "=", kr ? (unsigned long long)kr :
 		    (unsigned long long)p.value);
 	}
@@ -119,7 +124,7 @@ main(int argc, char **argv)
 	uint64_t started = mach_absolute_time();
 	for (unsigned round = 0; round < rounds; round++) {
 		volatile uint32_t *job = (volatile uint32_t *)base, *word = (volatile uint32_t *)(base + 0x800);
-		uint32_t value = 0xc0ffee01u + round;
+		uint32_t value = 0xc0ffee01u + round, want = midgard ? 0 : value;
 		struct submit s = { .jc = bo.offset, .bo_handles = (uint64_t)(uintptr_t)&bo.handle, .bo_handle_count = 1 };
 		struct wait_seq w;
 		struct wait_bo wb = { .handle = bo.handle, .timeout_ns = 1000000000 };
@@ -128,8 +133,13 @@ main(int argc, char **argv)
 		job[4] = (2u << 1) | 1u | (1u << 16);           /* write value; 64-bit pointers; job index 1 */
 		job[8] = (uint32_t)(bo.offset + 0x800);
 		job[9] = (uint32_t)((bo.offset + 0x800) >> 32);
-		job[10] = 6;                                    /* a 32-bit immediate */
-		job[12] = value;
+		if (midgard) {
+			job[10] = 3;                            /* zero */
+			word[0] = word[1] = value;
+		} else {
+			job[10] = 6;                            /* a 32-bit immediate */
+			job[12] = value;
+		}
 		__asm__ volatile ("dsb sy" ::: "memory");       /* out of the write-combining buffer before the request */
 
 		if ((kr = request(kSubmit, &s, sizeof(s))) != KERN_SUCCESS || s.jc == 0) {
@@ -139,12 +149,14 @@ main(int argc, char **argv)
 		w = (struct wait_seq){ .seq = s.jc, .timeout_ns = 1000000000 };
 		kr = request(kWaitSeq, &w, sizeof(w));
 		kern_return_t kb = request(kWaitBO, &wb, sizeof(wb));
-		if (rounds == 1 || *word != value) {
-			printf("mali_test: 4: job %llu: wait %#x, WAIT_BO %#x; the job's status word %#x; the word %#x%s\n",
-			    (unsigned long long)s.jc, kr, kb, job[0], *word, *word == value ? " -- THE GPU WROTE IT" : " -- not written");
+		bool written = word[0] == want && (!midgard || word[1] == 0);
+		if (rounds == 1 || !written) {
+			printf("mali_test: 4: job %llu: wait %#x, WAIT_BO %#x; the job's status word %#x; the words %#x %#x (%#x "
+			    "wanted)%s\n", (unsigned long long)s.jc, kr, kb, job[0], word[0], word[1], want,
+			    written ? " -- THE GPU WROTE IT" : " -- not written");
 		}
-		good += *word == value;
-		if (*word != value) {
+		good += written;
+		if (!written) {
 			break;
 		}
 	}

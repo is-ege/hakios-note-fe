@@ -41,10 +41,17 @@ standard bsd/dev/hakios.scfb_battery.c
 
 driver EXYNOS_CPUFREQ
 	file    bsd/dev/hakios.exynos_cpufreq.c
-	requires EXYNOS_ACPM
 	default n
-	help    the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's
-	help    DVFS, within the limits of Samsung's device tree for the M3s online, and lowered when the TMU reads them hot
+	help    an Exynos's CPU frequency governor (cpufreq_gov=1): the clusters' rates moved with the load, the touch screen
+	help    and the display's frames, within Samsung's limits, and lowered when the TMU reads them hot; the SoC's side a
+	help    glue (cpufreq_soc=: exynos9810, exynos8890)
+
+driver EXYNOS9810_CPUFREQ
+	file    bsd/dev/hakios.exynos9810_cpufreq.c
+	requires EXYNOS_CPUFREQ EXYNOS_ACPM
+	default n
+	help    the Exynos 9810's side of the governor (cpufreq_soc=exynos9810, the default): the Galaxy S9's two clusters, a
+	help    rate set through ACPM's DVFS, the device tree's limits for the M3s online
 
 driver MAX77705
 	file    bsd/dev/hakios.max77705.c
@@ -55,10 +62,16 @@ driver MAX77705
 
 driver EXYNOS_TMU
 	file    bsd/dev/hakios.exynos_tmu.c
-	requires EXYNOS_POWEROFF
-	help    the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses
-	help    (tmu=1), published as kern.hakios.temp.* and the POCO's kern.hakios.thermal_* (tmu=2), and the run ended or the
-	help    phone powered off when a zone or the battery is too hot (tmu=3; tmu_stop=, tmu_batt_stop=, tmu_off=1)
+	help    an Exynos's temperatures: its TMU (BIG, LITTLE, G3D, ISP), the SoC's side a glue (tmu_soc=: exynos9810,
+	help    exynos8890), read with each sensor's fuses (tmu=1), published as kern.hakios.temp.* and the POCO's
+	help    kern.hakios.thermal_* (tmu=2), and the run ended or the phone powered off when a zone or the battery is too
+	help    hot (tmu=3; tmu_stop=, tmu_batt_stop=, tmu_off=1)
+
+driver EXYNOS9810_TMU
+	file    bsd/dev/hakios.exynos9810_tmu.c
+	requires EXYNOS_TMU EXYNOS_POWEROFF
+	help    the Exynos 9810's side of the TMU driver (tmu_soc=exynos9810, the default): the Galaxy S9's two blocks, the
+	help    TMU's clock gate, tmu_enable's start and tmu_off's PS_HOLD
 
 driver EXYNOS_POWEROFF
 	file    bsd/dev/hakios.exynos_poweroff.c

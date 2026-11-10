@@ -1,7 +1,13 @@
 /*
  * The touch screen of the Galaxy S9 (starlte, Exynos 9810): a Samsung S6SY761 at 0x48 on the I2C bus of USI03
  * (HSI2C at 0x104B0000), as a source of touch records for /dev/hakios-touch (sys/hakios.input.h). Only with boot-arg
- * s6sy761=1: every address below belongs to this phone.
+ * s6sy761=1. The addresses are the board's (boards[] below, s6sy761_board=, starlte by default):
+ *   gracerlte  the Galaxy Note FE (Exynos 8890): an S6SY661 (sec_ts, firmware y661_grace.fw: the older command set, struct protocol) at
+ *              0x48 on HSI2C7 (0x14E10000, PERIC1, no USI; its clock's Q-channel CMU_PERIC1 +0x2464, the input clock
+ *              ACLK_PERIC1_66), pins gpf1-0/1 (0x14CE0000) to function 2, the IRQ ALIVE gpa1-0 (0x10580020); its
+ *              supplies (tsp_avdd, tsp_io) are the S2MPS16's, not switched here. Its device tree (hsi2c@14E10000,
+ *              touchscreen@48, hs-i2c7-bus, attn-irq) and Samsung's kernel for the 8890 (pinctrl-exynos.c,
+ *              S5E8890-cmu.c, clk-exynos8890.c; GPL-2.0, read for these facts)
  *
  * Nothing here powers the chip. Its two supplies (LDO35 1.8 V, LDO43 3.0 V of the S2MPS18) are "boot-on" in Samsung's
  * device tree, the boot loader leaves them on, and the WoA port's touch driver for the S9+ (same bus, address and
@@ -56,11 +62,13 @@
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.viewport.h>
+#include <sys/param.h>
 #include <sys/systm.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern kern_return_t thread_terminate(thread_t thread);
 extern void delay(int usec);
+extern bool hakios_s2mps16_touch_power(int (*say)(const char *, ...));      /* the Note FE's PMIC driver */
 
 /* (every line to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
 extern void loader_log_line(const char *line);
@@ -80,33 +88,76 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-/* ---- where things are ---- */
-#define ALIVE_PA                0x14050000UL
-#define GPA1                    0x040
-#define IRQ_PIN                 0
+/* ---- where things are: the board's ---- */
 #define CHIP                    0x48
 
-static struct hakios_hsi2c bus = {
-	.name = "s6sy761",
-	.regs_pa = 0x104B0000,                  /* hsi2c@104B0000: USI03 of PERIC0 */
-	.usi_mode_pa = 0x1041101C,              /* SYSREG_PERIC0: USI03's mode */
-	.cmu_pa = 0x10400000, .cmu_size = 0x4000,       /* CMU_PERIC0 */
-	.gates = { 0x2018, 0x206C, 0x20DC, 0x20E0 }, .ngates = 4,
-	.qch = 0x3038, .div = 0x1810, .mux = 0x0120,
-	.pins_pa = 0x10430020,                  /* PERIC0 GPIO, bank gpp1: SCL pin 4, SDA pin 5 */
-	.pins_mask = 0xffu << 16, .pins_want = 0x22u << 16,
-	.ipclk_mhz = 400, .bus_hz = 400000,       /* seen on the phone, 1 November: CMU divider 0 on the 400 MHz branch */
+/*
+ * The chip's command set: the S9's S6SY761 (the header's), or the older one of the Note FE's S6SY661 (Samsung's
+ * sec_ts.h for the 8890): sense on 0x40, clear the queue 0x60, one event 0x71, read again until an empty one (no
+ * count of the rest); an event's byte 0 [7:6] kind (0 status, 1 coordinate), [2:0] 1 down, 2 moved, 3 up; byte 1
+ * [3:0] the finger (from 1); X = b2 << 4 | b4 >> 4, Y = b3 << 4 | b4 & 15. Its 0x21 and 0x23 are not that command set's.
+ */
+struct protocol {
+	uint8_t sense_on, clear_events, one_event;
+	bool old;
 };
 
+static const struct protocol proto_y761 = { .sense_on = 0x10, .clear_events = 0x62, .one_event = 0x60 };
+static const struct protocol proto_y661 = { .sense_on = 0x40, .clear_events = 0x60, .one_event = 0x71, .old = true };
+
+struct board {
+	const char *name;
+	struct hakios_hsi2c bus;
+	uint64_t irq_pa;                        /* the IRQ pin's GPIO bank (CON; DAT at +4) */
+	uint32_t irq_pin;
+	bool ldo;                               /* its supplies can be cycled (the S9's LDO35 and LDO43, through ACPM) */
+	bool (*power_on)(int (*say)(const char *, ...));        /* its supplies switched on before step 4; NULL: on already */
+	const struct protocol *proto;
+};
+
+static const struct board boards[] = {
+	{
+		.name = "starlte",
+		.bus = {
+			.name = "s6sy761",
+			.regs_pa = 0x104B0000,                  /* hsi2c@104B0000: USI03 of PERIC0 */
+			.usi_mode_pa = 0x1041101C,              /* SYSREG_PERIC0: USI03's mode */
+			.cmu_pa = 0x10400000, .cmu_size = 0x4000,       /* CMU_PERIC0 */
+			.gates = { 0x2018, 0x206C, 0x20DC, 0x20E0 }, .ngates = 4,
+			.qch = 0x3038, .div = 0x1810, .mux = 0x0120,
+			.pins_pa = 0x10430020,                  /* PERIC0 GPIO, bank gpp1: SCL pin 4, SDA pin 5 */
+			.pins_mask = 0xffu << 16, .pins_want = 0x22u << 16,
+			.ipclk_mhz = 400, .bus_hz = 400000,     /* seen on the phone, 1 November: CMU divider 0 on the 400 MHz branch */
+		},
+		.irq_pa = 0x14050040, .irq_pin = 0, .ldo = true,        /* ALIVE gpa1-0 */
+		.proto = &proto_y761,
+	},
+	{
+		.name = "gracerlte",
+		.bus = {
+			.name = "s6sy661",
+			.regs_pa = 0x14E10000,                  /* hsi2c@14E10000: HSI2C7 of PERIC1 */
+			.cmu_pa = 0x14C80000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+			.qch = 0x2464,                          /* QSTATE_CTRL_HSI2C7 */
+			.pins_pa = 0x14CE0000,                  /* gpf1: SDA pin 0, SCL pin 1 */
+			.pins_mask = 0xffu, .pins_want = 0x22u,
+			.ipclk_mhz = 66, .bus_hz = 400000, .timing_counts = true,
+		},
+		.irq_pa = 0x10580020, .irq_pin = 0,                     /* ALIVE gpa1-0 */
+		.power_on = hakios_s2mps16_touch_power,                 /* S-Boot leaves them off */
+		.proto = &proto_y661,
+	},
+};
+
+static const struct board *board = &boards[0];
+static struct hakios_hsi2c bus;
+
 /* ---- the chip ---- */
-#define CMD_SENSE_ON            0x10
 #define CMD_FW_CHECK            0x21
 #define CMD_PANEL_INFO          0x23
 #define CMD_READ_ID             0x52
 #define CMD_BOOT_STATUS         0x55
-#define CMD_ONE_EVENT           0x60
 #define CMD_ALL_EVENTS          0x61
-#define CMD_CLEAR_EVENTS        0x62
 #define BOOT_APPLICATION        0x20
 #define EVENT_SIZE              8
 #define EVENTS_MOST             31
@@ -115,7 +166,7 @@ static struct hakios_hsi2c bus = {
 #define POLL_MS                 4
 #define MINUTE_TICKS            (60 * 1000 / POLL_MS)
 
-static vm_offset_t alive;
+static vm_offset_t irq_bank;
 static uint32_t res_x = 4096, res_y = 4096;
 static bool touch_aspect;
 static uint32_t ldo_cycles = 1;       /* s6sy761_ldo=0: never switch the chip's supplies */
@@ -123,6 +174,39 @@ static struct {
 	uint64_t events, downs;
 } stats;
 static bool finger_down[FINGERS];
+
+/*
+ * Where the polling thread's time goes (looking for touches that arrive late, in bursts; 9 November): the counter's
+ * ticks this round spent in transfers and in handing events on, and the worst round, sleep, transfer and hand-on of
+ * the minute. A round or a sleep of SLOW_MS or more is said at once (SLOW_LINES a minute at most).
+ */
+#define SLOW_MS                 20
+#define SLOW_LINES              40
+static struct {
+	uint64_t i2c, post;                             /* this round's */
+	uint64_t worst_round, worst_sleep, worst_i2c, worst_post;
+	uint32_t slow, lines;
+} timing;
+
+static uint32_t
+ticks_us(uint64_t ticks)
+{
+	uint64_t ns;
+
+	absolutetime_to_nanoseconds(ticks, &ns);
+	return (uint32_t)(ns / NSEC_PER_USEC);
+}
+
+static void
+post(uint32_t kind, uint32_t id, uint32_t x, uint32_t y)
+{
+	uint64_t began = mach_absolute_time(), took;
+
+	hakios_touch_post(kind, id, x, y);
+	took = mach_absolute_time() - began;
+	timing.post += took;
+	timing.worst_post = MAX(timing.worst_post, took);
+}
 
 static inline uint32_t
 rd(vm_offset_t base, uint32_t off)
@@ -147,6 +231,7 @@ chip_write(uint8_t cmd, const uint8_t *data, uint32_t len)
 static uint32_t
 chip_read(uint8_t cmd, uint8_t *answer, uint32_t len)
 {
+	uint64_t began = mach_absolute_time(), took;
 	uint32_t error = 0;
 
 	for (int attempt = 0; attempt < 2; attempt++) {
@@ -159,6 +244,9 @@ chip_read(uint8_t cmd, uint8_t *answer, uint32_t len)
 			break;
 		}
 	}
+	took = mach_absolute_time() - began;
+	timing.i2c += took;
+	timing.worst_i2c = MAX(timing.worst_i2c, took);
 	return error;
 }
 
@@ -181,51 +269,56 @@ all_up(void)
 	}
 }
 
+/* a finger (from 1) down (1), moved (2) or up (3) at the chip's x, y: the same in both command sets */
+static void
+finger(uint32_t id, uint32_t state, uint32_t x, uint32_t y)
+{
+	uint32_t nx, ny;
+
+	if (id == 0 || id > FINGERS || state == 0) {
+		return;
+	}
+	id--;
+	/* the CPU governor's touch boost (cpufreq_gov=1): a stamp and, at the first event, its thread woken; no wait */
+	hakios_exynos_cpufreq_touch();
+	if (trace_left > 0) {
+		trace_left--;
+		say("s6sy761: t %llu ms: finger %u %s at %u,%u\n", (unsigned long long)(mach_absolute_time() / 24000), id,
+		    state == 3 ? "up" : (finger_down[id] ? "moved" : "down"), x, y);
+	}
+	nx = x >= res_x - 1 ? 65535 : x * 65535 / (res_x - 1);
+	ny = y >= res_y - 1 ? 65535 : y * 65535 / (res_y - 1);
+	if (touch_aspect) {
+		struct hakios_viewport viewport;
+		uint32_t pw, ph;
+		if (hakios_scanout_viewport(&viewport, &pw, &ph)) {
+			/* The chip's coordinate grid need not equal the panel's pixel grid. */
+			nx = hakios_viewport_coordinate((uint32_t)((uint64_t)nx * (pw - 1) / 65535), viewport.x, viewport.width);
+			ny = hakios_viewport_coordinate((uint32_t)((uint64_t)ny * (ph - 1) / 65535), viewport.y, viewport.height);
+		}
+	}
+	stats.events++;
+	if (state == 3) {
+		if (finger_down[id]) {
+			finger_down[id] = false;
+			post(HAKIOS_TOUCH_UP, id, nx, ny);
+		}
+	} else if (!finger_down[id]) {
+		finger_down[id] = true;
+		stats.downs++;
+		post(HAKIOS_TOUCH_DOWN, id, nx, ny);
+	} else {
+		post(HAKIOS_TOUCH_MOVE, id, nx, ny);
+	}
+}
+
 static void
 handle_event(const uint8_t *e)
 {
 	uint32_t kind = e[0] & 3;
 
 	if (kind == 0) {
-		uint32_t id = (e[0] >> 2) & 0xf, state = e[0] >> 6;
-		uint32_t x = (uint32_t)e[1] << 4 | e[3] >> 4, y = (uint32_t)e[2] << 4 | (e[3] & 0xf);
-		uint32_t nx, ny;
-
-		if (id == 0 || id > FINGERS || state == 0) {
-			return;
-		}
-		id--;
-		/* the CPU governor's touch boost (cpufreq_gov=1): a stamp and, at the first event, its thread woken; no wait */
-		hakios_exynos_cpufreq_touch();
-		if (trace_left > 0) {
-			trace_left--;
-			say("s6sy761: t %llu ms: finger %u %s at %u,%u\n", (unsigned long long)(mach_absolute_time() / 24000), id,
-			    state == 3 ? "up" : (finger_down[id] ? "moved" : "down"), x, y);
-		}
-		nx = x >= res_x - 1 ? 65535 : x * 65535 / (res_x - 1);
-		ny = y >= res_y - 1 ? 65535 : y * 65535 / (res_y - 1);
-		if (touch_aspect) {
-			struct hakios_viewport viewport;
-			uint32_t pw, ph;
-			if (hakios_scanout_viewport(&viewport, &pw, &ph)) {
-				/* The chip's coordinate grid need not equal the panel's pixel grid. */
-				nx = hakios_viewport_coordinate((uint32_t)((uint64_t)nx * (pw - 1) / 65535), viewport.x, viewport.width);
-				ny = hakios_viewport_coordinate((uint32_t)((uint64_t)ny * (ph - 1) / 65535), viewport.y, viewport.height);
-			}
-		}
-		stats.events++;
-		if (state == 3) {
-			if (finger_down[id]) {
-				finger_down[id] = false;
-				hakios_touch_post(HAKIOS_TOUCH_UP, id, nx, ny);
-			}
-		} else if (!finger_down[id]) {
-			finger_down[id] = true;
-			stats.downs++;
-			hakios_touch_post(HAKIOS_TOUCH_DOWN, id, nx, ny);
-		} else {
-			hakios_touch_post(HAKIOS_TOUCH_MOVE, id, nx, ny);
-		}
+		finger((e[0] >> 2) & 0xf, e[0] >> 6, (uint32_t)e[1] << 4 | e[3] >> 4, (uint32_t)e[2] << 4 | (e[3] & 0xf));
 	} else if (kind == 1) {
 		uint32_t type = (e[0] >> 2) & 0xf, sid = e[1];
 
@@ -233,12 +326,66 @@ handle_event(const uint8_t *e)
 			/* the chip started again by itself (its watchdog): sensing is off again */
 			say("s6sy761: the chip restarted itself: sense on again\n");
 			all_up();
-			(void)chip_write(CMD_SENSE_ON, NULL, 0);
+			(void)chip_write(board->proto->sense_on, NULL, 0);
 		} else if (type == 1 && sid == 1) {
 			say("s6sy761: the chip's event queue was full: emptied, every finger up\n");
 			all_up();
-			(void)chip_write(CMD_CLEAR_EVENTS, NULL, 0);
+			(void)chip_write(board->proto->clear_events, NULL, 0);
 		}
+	}
+}
+
+/* the older command set's event (Samsung's sec_ts_read_event for the 8890) */
+static void
+handle_event_old(const uint8_t *e)
+{
+	uint32_t kind = e[0] >> 6;
+
+	if (kind == 1) {
+		finger(e[1] & 0xf, e[0] & 7, (uint32_t)e[2] << 4 | e[4] >> 4, (uint32_t)e[3] << 4 | (e[4] & 0xf));
+	} else if (kind == 0 && e[0] == 1 && e[1] == 0x0c && e[2] == 0x20) {
+		say("s6sy761: the chip restarted itself: sense on again\n");
+		all_up();
+		(void)chip_write(board->proto->sense_on, NULL, 0);
+	} else if (kind == 0 && e[0] == 2 && e[1] == 0x29) {
+		say("s6sy761: the chip's event queue was full: every finger up\n");
+		all_up();
+	}
+}
+
+/*
+ * ... one event a read, as Samsung's sec_ts_read_event for the 8890 reads them: until an empty one or a status event,
+ * at most 128; past that the chip's queue is cleared and the fingers stay down (Samsung releases them only on the
+ * chip's own "queue full"). It stopped at 32 and lifted every finger: 49 times in a few minutes of drawing on the Note
+ * FE, each a cut in the stroke (8 November). A read of more than 16 is said, with what it held.
+ */
+#define EVENTS_MOST_OLD         128
+
+static void
+read_events_old(void)
+{
+	uint8_t e[EVENT_SIZE];
+	uint32_t n, status = 0;
+
+	for (n = 0; n < EVENTS_MOST_OLD; n++) {
+		if (chip_read(board->proto->one_event, e, sizeof(e)) != 0 && chip_read(board->proto->one_event, e, sizeof(e)) != 0) {
+			break;
+		}
+		if (e[0] == 0) {
+			break;
+		}
+		handle_event_old(e);
+		if (e[0] >> 6 == 0) {
+			status++;
+			break;
+		}
+	}
+	if (n > 16) {
+		say("s6sy761: %u events in one read (%u status; the last %02x %02x %02x %02x)\n", n, status, e[0], e[1], e[2], e[3]);
+	}
+	if (n == EVENTS_MOST_OLD) {
+		say("s6sy761: more than %u events at once: the chip's queue cleared, the fingers kept\n", EVENTS_MOST_OLD);
+		(void)chip_write(board->proto->clear_events, NULL, 0);
 	}
 }
 
@@ -250,7 +397,12 @@ read_events(void)
 	uint32_t left;
 
 	/* one retry: a lost read can be a finger's "up" (seen on the phone: ~3 failed transfers a minute) */
-	if ((chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0 && chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0) || one[0] == 0) {
+	if (board->proto->old) {
+		read_events_old();
+		return;
+	}
+	if ((chip_read(board->proto->one_event, one, sizeof(one)) != 0 &&
+	    chip_read(board->proto->one_event, one, sizeof(one)) != 0) || one[0] == 0) {
 		return;
 	}
 	handle_event(one);
@@ -261,7 +413,7 @@ read_events(void)
 	if (left > EVENTS_MOST) {
 		say("s6sy761: %u events waiting, more than %u: the queue emptied, every finger up\n", left, EVENTS_MOST);
 		all_up();
-		(void)chip_write(CMD_CLEAR_EVENTS, NULL, 0);
+		(void)chip_write(board->proto->clear_events, NULL, 0);
 		return;
 	}
 	if (chip_read(CMD_ALL_EVENTS, rest, left * EVENT_SIZE) != 0 && chip_read(CMD_ALL_EVENTS, rest, left * EVENT_SIZE) != 0) {
@@ -275,7 +427,7 @@ read_events(void)
 static bool
 irq_low(void)
 {
-	return ((rd(alive, GPA1 + 4) >> IRQ_PIN) & 1) == 0;
+	return ((rd(irq_bank, (uint32_t)(board->irq_pa & 0xfff) + 4) >> board->irq_pin) & 1) == 0;
 }
 
 /* ---- the chip's supplies, switched off and on (see the header) ---- */
@@ -346,19 +498,21 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 	uint32_t steps = (uint32_t)(uintptr_t)arg, step = 0, error;
 	uint8_t answer[16];
 
-	say("s6sy761: step 1: map the HSI2C, the PERIC0 clocks and system register, the pins\n");
-	alive = ml_io_map(ALIVE_PA, 0x1000);
-	if (!alive || !hakios_hsi2c_map(&bus, say)) {
+	say("s6sy761: step 1 (%s): map the HSI2C, its clocks and mode, the pins\n", board->name);
+	irq_bank = ml_io_map((vm_offset_t)(board->irq_pa & ~0xfffULL), 0x1000);
+	if (!irq_bank || !hakios_hsi2c_map(&bus, say)) {
 		goto out;
 	}
-	say("s6sy761: the IRQ pin: CON %x, %s\n", rd(alive, GPA1) & 0xf, irq_low() ? "low (events waiting)" : "high");
+	say("s6sy761: the IRQ pin: CON %x, %s\n", (rd(irq_bank, (uint32_t)(board->irq_pa & 0xfff)) >> (board->irq_pin * 4)) & 0xf,
+	    irq_low() ? "low (events waiting)" : "high");
 	if (++step >= steps) {
 		goto out;
 	}
 
-	say("s6sy761: step 2: the clocks of USI03 on, USI03 to I2C, its pins to I2C\n");
+	say("s6sy761: step 2: the bus's clocks on, its USI (if any) to I2C, its pins to I2C\n");
 	hakios_hsi2c_power(&bus);
-	say("s6sy761: now: USI03 mode %x, gpp1 CON %x\n", *(volatile uint32_t *)bus.usi, *(volatile uint32_t *)bus.pins);
+	say("s6sy761: now: USI mode %x, pins CON %x, Q-channel %x\n", bus.usi ? *(volatile uint32_t *)bus.usi : 0,
+	    *(volatile uint32_t *)bus.pins, bus.cmu && bus.qch ? *(volatile uint32_t *)(bus.cmu + bus.qch) : 0);
 	if (++step >= steps) {
 		goto out;
 	}
@@ -369,9 +523,13 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 		goto out;
 	}
 
+	if (board->power_on != NULL && !board->power_on(say)) {
+		say("s6sy761: its supplies are not on: the chip is not asked\n");
+		goto out;
+	}
 	say("s6sy761: step 4: ask the chip at 0x%x\n", CHIP);
 	error = chip_read(CMD_BOOT_STATUS, answer, 1);
-	for (uint32_t cycle = 1; error != 0 && ldo_cycles != 0 && cycle <= 3; cycle++) {
+	for (uint32_t cycle = 1; error != 0 && board->ldo && ldo_cycles != 0 && cycle <= 3; cycle++) {
 		say("s6sy761: no answer (INT_STAT %x): its supplies switched off and on, cycle %u of 3\n", error, cycle);
 		if (!power_cycle()) {
 			break;
@@ -385,8 +543,9 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 		}
 	}
 	if (error != 0) {
-		say("s6sy761: no answer (INT_STAT %x): the bus is not working, or the chip has no power (its supplies are "
-		    "the PMIC's LDO35 and LDO43%s)\n", error, ldo_cycles ? ", cycled without effect" : "; s6sy761_ldo=0 left them");
+		say("s6sy761: no answer (INT_STAT %x): the bus is not working, or the chip has no power%s\n", error,
+		    !board->ldo ? " (its supplies cannot be cycled on this board)" : ldo_cycles ? " (LDO35 and LDO43 cycled without "
+		    "effect)" : " (s6sy761_ldo=0 left LDO35 and LDO43)");
 		goto out;
 	}
 	say("s6sy761: boot status %x (%s)\n", answer[0], answer[0] == BOOT_APPLICATION ? "its firmware runs" :
@@ -398,10 +557,10 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 	if (chip_read(CMD_READ_ID, answer, 3) == 0) {
 		say("s6sy761: id %02x %02x %02x\n", answer[0], answer[1], answer[2]);
 	}
-	if (chip_read(CMD_FW_CHECK, answer, 1) == 0) {
+	if (!board->proto->old && chip_read(CMD_FW_CHECK, answer, 1) == 0) {
 		say("s6sy761: firmware check %x (%s)\n", answer[0], (answer[0] & 0x80) ? "good" : "BAD");
 	}
-	if (chip_read(CMD_PANEL_INFO, answer, 11) == 0) {
+	if (!board->proto->old && chip_read(CMD_PANEL_INFO, answer, 11) == 0) {
 		uint32_t x = (uint32_t)answer[0] << 8 | answer[1], y = (uint32_t)answer[2] << 8 | answer[3];
 
 		say("s6sy761: panel: %u x %u, %u TX x %u RX channels\n", x, y, answer[8], answer[9]);
@@ -414,12 +573,12 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 	}
 
 	say("s6sy761: step 5: sense on, the event queue emptied\n");
-	if ((error = chip_write(CMD_SENSE_ON, NULL, 0)) != 0) {
+	if ((error = chip_write(board->proto->sense_on, NULL, 0)) != 0) {
 		say("s6sy761: sense on failed (%x)\n", error);
 		goto out;
 	}
 	delay_for_interval(10, NSEC_PER_MSEC);
-	(void)chip_write(CMD_CLEAR_EVENTS, NULL, 0);
+	(void)chip_write(board->proto->clear_events, NULL, 0);
 	if (++step >= steps) {
 		goto out;
 	}
@@ -433,19 +592,44 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 	say("s6sy761: step 6: watching the IRQ pin every %u ms; the coordinates are 0-%u x 0-%u\n", POLL_MS, res_x - 1,
 	    res_y - 1);
 	for (unsigned tick = 1;; tick++) {
+		uint64_t began = mach_absolute_time(), events = stats.events, round, slept;
+
+		timing.i2c = timing.post = 0;
 		for (int rounds = 0; rounds < 4 && irq_low(); rounds++) {
 			read_events();
 		}
+		round = mach_absolute_time() - began;
+		timing.worst_round = MAX(timing.worst_round, round);
+		if (ticks_us(round) >= SLOW_MS * 1000) {
+			timing.slow++;
+			if (timing.lines++ < SLOW_LINES) {
+				say("s6sy761: SLOW round: %u us for %llu events: %u us in transfers, %u us handing them on\n", ticks_us(round),
+				    stats.events - events, ticks_us(timing.i2c), ticks_us(timing.post));
+			}
+		}
 		if (tick % MINUTE_TICKS == 0) {
-			say("s6sy761: a minute: %llu touches, %llu events, %llu transfers, %llu failed (last %x)\n", stats.downs,
-			    stats.events, bus.transfers, bus.errors, bus.last_error);
+			say("s6sy761: a minute: %llu touches, %llu events, %llu transfers, %llu failed (last %x); worst round %u us, "
+			    "sleep %u us (of %u ms), one read %u us, one event handed on %u us; %u slow\n", stats.downs,
+			    stats.events, bus.transfers, bus.errors, bus.last_error, ticks_us(timing.worst_round),
+			    ticks_us(timing.worst_sleep), POLL_MS, ticks_us(timing.worst_i2c), ticks_us(timing.worst_post), timing.slow);
+			timing.worst_round = timing.worst_sleep = timing.worst_i2c = timing.worst_post = 0;
+			timing.slow = timing.lines = 0;
 		}
 		if (bus.errors >= 1000 && bus.errors * 2 > bus.transfers) {
 			say("s6sy761: more than half of %llu transfers have failed: giving up\n", bus.transfers);
 			all_up();               /* (no finger left down for good) */
 			break;
 		}
+		began = mach_absolute_time();
 		delay_for_interval(POLL_MS, NSEC_PER_MSEC);
+		slept = mach_absolute_time() - began;
+		timing.worst_sleep = MAX(timing.worst_sleep, slept);
+		if (ticks_us(slept) >= SLOW_MS * 1000) {
+			timing.slow++;
+			if (timing.lines++ < SLOW_LINES) {
+				say("s6sy761: SLOW sleep: %u us where %u ms were asked\n", ticks_us(slept), POLL_MS);
+			}
+		}
 	}
 out:
 	if (step < 6 && steps < 6) {
@@ -458,11 +642,25 @@ void
 hakios_s6sy761_init(void)
 {
 	uint32_t enabled = 0, steps = 6;
+	char name[16] = "starlte";
 	thread_t thread;
 
 	if (!PE_parse_boot_argn("s6sy761", &enabled, sizeof(enabled)) || enabled == 0) {
 		return;
 	}
+	/* s6sy761_board=NAME: the board's bus and IRQ pin (boards[]: starlte, gracerlte) */
+	(void)PE_parse_boot_arg_str("s6sy761_board", name, sizeof(name));
+	board = NULL;
+	for (unsigned i = 0; i < sizeof(boards) / sizeof(boards[0]); i++) {
+		if (strcmp(name, boards[i].name) == 0) {
+			board = &boards[i];
+		}
+	}
+	if (board == NULL) {
+		say("s6sy761: s6sy761_board=%s: no such board (starlte, gracerlte)\n", name);
+		return;
+	}
+	bus = board->bus;
 	PE_parse_boot_argn("s6sy761_steps", &steps, sizeof(steps));
 	PE_parse_boot_argn("s6sy761_ldo", &ldo_cycles, sizeof(ldo_cycles));
 	PE_parse_boot_argn("s6sy761_ipclk", &bus.ipclk_mhz, sizeof(bus.ipclk_mhz));

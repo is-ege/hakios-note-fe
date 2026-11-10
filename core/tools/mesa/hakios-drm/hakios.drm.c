@@ -36,6 +36,7 @@
 #define HAKIOS_GPU_SURFACE     0x7e            /* the request that is not Linux's (both services) */
 #define HAKIOS_GPU_DESCRIBE    0xffffffffu     /* ... asked only what the buffer would be like */
 #define HAKIOS_MALI_WAIT       0x7d            /* HakiosMali's own: wait for a job by its number */
+#define HAKIOS_MALI_GPU_DRAWN  0x7b            /* HakiosMali's own: a surface this process's GPU alone draws */
 
 /* The kernel's services, by the names of the Linux drivers they stand in for. */
 static const struct service {
@@ -284,6 +285,21 @@ hakios_drm_surface(int fd, struct hakios_drm_surface *surface)
 		return -1;
 	}
 	return 0;
+}
+
+/*
+ * The window server's (userland/src/eagl.c): a surface only this process's GPU draws, its locks for writing only marking
+ * it changed. HakiosMali then cleans it out of the processors' caches only after another process's write (its
+ * kHakiosMaliGPUDrawn). Nothing to say before the connection is open.
+ */
+__attribute__((visibility("default"))) int
+hakios_drm_gpu_drawn(uint32_t surface)
+{
+	struct {
+		uint32_t surface;
+	} request = { surface };                        /* struct mali_gpu_drawn */
+
+	return opened == PANFROST ? call(HAKIOS_MALI_GPU_DRAWN, &request, sizeof(request)) : 0;
 }
 
 int

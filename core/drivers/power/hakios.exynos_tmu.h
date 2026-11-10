@@ -112,7 +112,7 @@ tmu_inten_reg(unsigned sensor)
 /* the calibration (the dt's samsung,tmu_* of all four nodes) */
 #define TMU_FIRST_POINT         25              /* tmu_first_point_trim */
 #define TMU_SECOND_POINT        85              /* tmu_second_point_trim */
-#define TMU_EFUSE_VALUE         55              /* tmu_efuse_value: error1 when the fuse holds 0 (411-412) */
+#define TMU_EFUSE_VALUE         55              /* the 9810's tmu_efuse_value: error1 when the fuse holds 0 (411-412) */
 #define TMU_BSP_MIN             10              /* tmu.h: what the BSP clamps to */
 #define TMU_BSP_MAX             125
 
@@ -129,20 +129,20 @@ struct tmu_cal {
  * its fallback, the dt's efuse value 55 >> 9, is 0), this uses one-point arithmetic and says so (fell_back 2).
  */
 static inline struct tmu_cal
-tmu_cal_of(uint32_t triminfo, uint32_t triminfo0)
+tmu_cal_of(uint32_t triminfo, uint32_t triminfo0, uint32_t efuse)
 {
 	struct tmu_cal c = { 0, 0, 0, 0 };
 
 	c.two_point = (uint8_t)TMU_TRIM_CAL_TYPE(triminfo0);
 	c.error1 = (uint16_t)TMU_TRIM_ERROR1(triminfo);
 	if (c.error1 == 0) {
-		c.error1 = TMU_EFUSE_VALUE & 0x1ff;
+		c.error1 = efuse & 0x1ff;
 		c.fell_back = 1;
 	}
 	if (c.two_point) {
 		c.error2 = (uint16_t)TMU_TRIM_ERROR2(triminfo);
 		if (c.error2 == 0) {
-			c.error2 = (TMU_EFUSE_VALUE >> 9) & 0x1ff;
+			c.error2 = (efuse >> 9) & 0x1ff;
 		}
 		if (c.error2 <= c.error1) {
 			c.two_point = 0;
@@ -216,13 +216,39 @@ static const struct tmu_zone {
 	uint16_t        sensors;        /* the dt's mask */
 	int32_t         android_cools_mc;
 	int32_t         android_hot_mc;
+	uint32_t        valid;          /* a STATUS bit that must be set for a reading to count (0: none) */
 } tmu_zones[] = {
-	{ "big", TMU_BLOCK_TOP, 0x5e, 83000, 115000 },
-	{ "little", TMU_BLOCK_TOP, 0x20, 76000, 115000 },
-	{ "g3d", TMU_BLOCK_SUB, 0x02, 88000, 115000 },
-	{ "isp", TMU_BLOCK_SUB, 0x04, 91000, 115000 },
+	{ "big", TMU_BLOCK_TOP, 0x5e, 83000, 115000, 0 },
+	{ "little", TMU_BLOCK_TOP, 0x20, 76000, 115000, 0 },
+	{ "g3d", TMU_BLOCK_SUB, 0x02, 88000, 115000, 0 },
+	{ "isp", TMU_BLOCK_SUB, 0x04, 91000, 115000, 0 },
 };
 #define TMU_NZONES      (sizeof(tmu_zones) / sizeof(tmu_zones[0]))
 #define TMU_ANDROID_HOT_MC      115000
+
+/*
+ * What the driver needs from the SoC, chosen by tmu_soc=: the 9810's is drivers/power/hakios.exynos9810_tmu.c, the 8890's
+ * devices/gracerlte/soc/drivers/core/hakios.exynos8890_tmu.c. The zones are always big, little, g3d, isp, in that order.
+ */
+#define TMU_BLOCKS_MOST         4
+
+struct hakios_tmu_glue {
+	const char              *name;
+	unsigned                nblocks;
+	uint32_t                block_pa[TMU_BLOCKS_MOST];
+	const char              *block_name[TMU_BLOCKS_MOST];
+	const struct tmu_zone   *zones;                 /* TMU_NZONES of them */
+	uint32_t                efuse;                  /* a sensor's calibration when its fuse is empty */
+	/* the TMU's bus clock, read (and opened with ungate) before any block is touched; false: it is shut */
+	bool                    (*clock_open)(int (*say)(const char *, ...), bool ungate);
+	/* tmu_enable=1: a stopped block started, never its hardware trip; NULL: not offered */
+	void                    (*start_block)(int (*say)(const char *, ...), const char *name, uintptr_t va, uintptr_t top_va);
+	/* tmu_off=1: the phone powered off; returns only if it still runs; NULL: not offered */
+	bool                    (*power_off)(const char *who, int (*say)(const char *, ...));
+};
+
+/* NULL from drivers/core/hakios.stubs.c when that SoC's file is left out */
+const struct hakios_tmu_glue *hakios_tmu_glue_exynos9810(void);
+const struct hakios_tmu_glue *hakios_tmu_glue_exynos8890(void);
 
 #endif /* _HAKIOS_EXYNOS_TMU_H_ */

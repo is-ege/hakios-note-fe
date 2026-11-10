@@ -2,13 +2,13 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **539 arguments**: 473 read by the kernel, 17 by the loader, 61 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **557 arguments**: 489 read by the kernel, 17 by the loader, 63 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (105)
+## GPU and display (115)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -28,12 +28,14 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `display_probe` | K | `hakios.adreno.c` | `CONFIG_DISPLAY_PROBE` |  |
 | `fb_beat` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_BEAT` |  |
 | `fb_ca_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_CA_HZ` |  |
+| `fb_cpu` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_CPU` |  |
 | `fb_diff` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_DIFF` |  |
-| `fb_dpp` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_DPP` |  |
+| `fb_dpp` | K | `MiniIOMobileFramebuffer.cpp`, `hakios.s6sy761.c` | `CONFIG_FB_DPP` |  |
 | `fb_filter` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FILTER` |  |
 | `fb_flip` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FLIP` |  |
 | `fb_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_HZ` |  |
 | `fb_measure` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_MEASURE` |  |
+| `fb_nativeui` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_NATIVEUI` |  |
 | `fb_pri` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_PRI` |  |
 | `fb_queue` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_QUEUE` |  |
 | `fb_rt` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_RT` |  |
@@ -56,11 +58,13 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `glfetch` | U | `eagl.c` | `CONFIG_GLFETCH` |  |
 | `glframes` | U | `eagl.c` | `CONFIG_GLFRAMES` |  |
 | `glgroup` | U | `eagl.c` | `CONFIG_GLGROUP` |  |
+| `glhash` | U | `eagl.c` | `CONFIG_GLHASH` |  |
 | `glnumbers` | U | `eagl.c` | `CONFIG_GLNUMBERS` |  |
 | `glpace` | U | `eagl.c` | `CONFIG_GLPACE` |  |
 | `glplain` | U | `eagl.c` | `CONFIG_GLPLAIN` |  |
 | `glprecision` | U | `eagl.c` | `CONFIG_GLPRECISION` |  |
 | `glprof` | U | `eagl.c` | `CONFIG_GLPROF` |  |
+| `glprof_wait` | U | `eagl.c` | `CONFIG_GLPROF_WAIT` |  |
 | `glshaders` | U | `eagl.c` | `CONFIG_GLSHADERS` |  |
 | `glshow` | U | `eagl.c` | `CONFIG_GLSHOW` |  |
 | `glshow_part` | U | `eagl.c` | `CONFIG_GLSHOW_PART` |  |
@@ -91,16 +95,22 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu_recover` | K | `hakios.adreno.c` | `CONFIG_GPU_RECOVER` |  |
 | `gpu_va` | K | `hakios.adreno.c` | `CONFIG_GPU_VA` |  |
 | `mali` | K | `hakios.mali.c` | `CONFIG_MALI` |  |
-| `mali_acpm` | K | `hakios.mali.c` | `CONFIG_MALI_ACPM` |  |
+| `mali_acpm` | K | `hakios.exynos9810_g3d.c` | `CONFIG_MALI_ACPM` |  |
+| `mali_cache_profile` | K | `hakios.mali.cpp` | `CONFIG_MALI_CACHE_PROFILE` |  |
+| `mali_calls` | K | `hakios.mali.cpp` | `CONFIG_MALI_CALLS` |  |
 | `mali_fastmap` | K | `hakios.mali.c` | `CONFIG_MALI_FASTMAP` |  |
 | `mali_flush` | K | `hakios.mali.cpp` | `CONFIG_MALI_FLUSH` |  |
 | `mali_gov` | K | `hakios.mali.c` | `CONFIG_MALI_GOV` |  |
 | `mali_gov_frame` | K | `hakios.mali.c` | `CONFIG_MALI_GOV_FRAME` |  |
-| `mali_mhz` | K | `hakios.mali.c` | `CONFIG_MALI_MHZ` |  |
+| `mali_mhz` | K | `hakios.exynos9810_g3d.c` | `CONFIG_MALI_MHZ` |  |
 | `mali_nap_us` | K | `hakios.mali.c` | `CONFIG_MALI_NAP_US` |  |
-| `mali_pll` | K | `hakios.mali.c` | `CONFIG_MALI_PLL` |  |
+| `mali_peek` | K | `hakios.mali.c` | `CONFIG_MALI_PEEK` |  |
+| `mali_pll` | K | `hakios.exynos9810_g3d.c` | `CONFIG_MALI_PLL` |  |
+| `mali_soc` | K | `hakios.mali.c` | `CONFIG_MALI_SOC` |  |
 | `mali_trace` | K | `hakios.mali.c` | `CONFIG_MALI_TRACE` |  |
-| `mali_uv` | K | `hakios.mali.c` | `CONFIG_MALI_UV` |  |
+| `mali_uv` | K | `hakios.exynos9810_g3d.c` | `CONFIG_MALI_UV` |  |
+| `mcp` | K | `hakios.mali.cpp` | `CONFIG_MCP` |  |
+| `mcs` | K | `hakios.mali.cpp` | `CONFIG_MCS` |  |
 | `metal` | KU | `MiniIOMobileFramebuffer.cpp`, `hakios_metal_shown.c` | `CONFIG_METAL` |  |
 | `panel` | K | `hakios.s6e3ha8.c` | `CONFIG_PANEL` |  |
 | `panel_brightness` | K | `hakios.s6e3ha8.c` | `CONFIG_PANEL_BRIGHTNESS` |  |
@@ -115,7 +125,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `surf_wrap` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_WRAP` |  |
 | `surftrace` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE` |  |
 | `surftrace_of` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE_OF` |  |
-| `touch_lat` | KU | `MiniIOMobileFramebuffer.cpp`, `eagl.c`, `hakios.goodix.c`, `hakios.gpu.cpp`, `hakios.input.c`, `inject.c`, `inject_sb.c` | `CONFIG_TOUCH_LAT` |  |
+| `touch_lat` | KU | `MiniIOMobileFramebuffer.cpp`, `eagl.c`, `hakios.dwc3.c`, `hakios.goodix.c`, `hakios.gpu.cpp`, `hakios.input.c`, `inject.c`, `inject_sb.c` | `CONFIG_TOUCH_LAT` |  |
 | `vblur` | U | `eagl.c` | `CONFIG_VBLUR` |  |
 
 ## Security stand-ins (1)
@@ -350,21 +360,25 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `shub_req_rpc` | K | `hakios.ssp.c` | `CONFIG_SHUB_REQ_RPC` |  |
 | `shub_sensors` | K | `hakios.ssp.c` | `CONFIG_SHUB_SENSORS` |  |
 
-## Touch and buttons (17)
+## Touch and buttons (21)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `buttons` | K | `hakios.buttons.c` | `CONFIG_BUTTONS` |  |
 | `buttons_steps` | K | `hakios.buttons.c` | `CONFIG_BUTTONS_STEPS` |  |
 | `exynos_keys` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS` |  |
+| `exynos_keys_board` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS_BOARD` |  |
+| `fb_aspect` | K | `hakios.exynos_dpu.c`, `hakios.s6sy761.c` | `CONFIG_FB_ASPECT` |  |
 | `press_power` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER` |  |
 | `press_power_ms` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER_MS` |  |
 | `s6sy761` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761` |  |
+| `s6sy761_board` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_BOARD` |  |
 | `s6sy761_ipclk` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_IPCLK` |  |
 | `s6sy761_ldo` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_LDO` |  |
 | `s6sy761_pri` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_PRI` |  |
 | `s6sy761_steps` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_STEPS` |  |
 | `s6sy761_trace` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_TRACE` |  |
+| `touch_coalesce` | K | `hakios.input.c` | `CONFIG_TOUCH_COALESCE` |  |
 | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
 | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
 | `touch_rate` | K | `hakios.goodix.c` | `CONFIG_TOUCH_RATE` |  |
@@ -440,7 +454,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `virtio_net_ssid` | K | `hakios.virtio_net.c` | `CONFIG_VIRTIO_NET_SSID` |  |
 | `virtio_net_wifi` | K | `hakios.virtio_net.c` | `CONFIG_VIRTIO_NET_WIFI` |  |
 
-## USB (9)
+## USB (11)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -453,6 +467,8 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `usb_gadget_poll` | K | `hakios.dwc3.c` | `CONFIG_USB_GADGET_POLL` |  |
 | `usb_gadget_soc` | K | `hakios.dwc3.c` | `CONFIG_USB_GADGET_SOC` |  |
 | `usb_gadget_susphy` | K | `hakios.dwc3.c` | `CONFIG_USB_GADGET_SUSPHY` |  |
+| `usb_gadget_tx_chunk` | K | `hakios.dwc3.c` | `CONFIG_USB_GADGET_TX_CHUNK` |  |
+| `usb_tx` | K | `hakios.dwc3.c` | `CONFIG_USB_TX` |  |
 
 ## Haptics and torch (5)
 
@@ -464,7 +480,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `torch_max_s` | K | `hakios.s2mpb02_torch.c`, `hakios.torch.c` | `CONFIG_TORCH_MAX_S` |  |
 | `torch_secs` | K | `hakios.s2mpb02_torch.c`, `hakios.torch.c` | `CONFIG_TORCH_SECS` |  |
 
-## Chip, thermal and PMIC (19)
+## Chip, thermal and PMIC (20)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -485,6 +501,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `tmu_log` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_LOG` |  |
 | `tmu_off` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_OFF` |  |
 | `tmu_poll` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_POLL` |  |
+| `tmu_soc` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_SOC` |  |
 | `tmu_stop` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_STOP` |  |
 | `tmu_ungate` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_UNGATE` |  |
 
@@ -548,7 +565,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (84)
+## User space (85)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -581,6 +598,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cpufreq_gov_lit_min` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV_LIT_MIN` |  |
 | `cpufreq_gov_log` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV_LOG` |  |
 | `cpufreq_gov_ms` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV_MS` |  |
+| `cpufreq_soc` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_SOC` |  |
 | `cs_relax_platform_task_ports` | K | `1002-avf-security-level.patch` | `CONFIG_CS_RELAX_PLATFORM_TASK_PORTS` |  |
 | `early_log` | K | `1503-early-log-and-panic.patch` | `CONFIG_EARLY_LOG` |  |
 | `esslog` | K | `1507-esslog-exynos-snapshot.patch`, `1509-m3-diag-and-pan-off.patch` | `CONFIG_ESSLOG` |  |

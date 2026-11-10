@@ -11,10 +11,16 @@ driver ADRENO
 driver MALI
 	file    bsd/dev/hakios.mali.c
 	file    iokit/Kernel/hakios.mali.cpp iokitcpp
-	requires EXYNOS_ACPM
-	help    the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the
-	help    IOKit service Mesa's panfrost draws through; mali_gov=1 sets its clock (260, 455, 572 MHz) after its load and
-	help    the G3D's temperature. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported
+	help    a Mali GPU brought up step by step (mali=N, 9 for all), the Galaxy S9's G72 or the Note FE's T880, its SoC's
+	help    side a glue (mali_soc=: exynos9810, exynos8890); and HakiosMali, the IOKit service Mesa's panfrost draws
+	help    through; mali_gov=1 moves its clock after its load where the glue can. HakiOS's Mali-G52 driver of the
+	help    Infinix Hot 20, ported
+
+driver EXYNOS9810_G3D
+	file    bsd/dev/hakios.exynos9810_g3d.c
+	requires MALI EXYNOS_ACPM
+	help    the Exynos 9810's side of the Galaxy S9's Mali-G72 (mali_soc=exynos9810, the default): the G3D's supply through
+	help    ACPM, PLL_G3D (260, 455, 572 MHz for mali_gov) and its power domain
 
 standard bsd/dev/hakios.vgpu.c
 	help    the virtio GPU (AVF): the 2D display path, the cursor queue and the device's interrupts (patches 1202, 1300-1305)

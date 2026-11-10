@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 589 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 617 symbols in 20 groups; 55 are set, 46 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (52)
+# Drivers built in (62)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -91,8 +91,11 @@ CONFIG_HAKIOS_EXYNOS_ACPM=y
 # the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window ... [hakios.adreno.c, hakios.gpu.cpp]
 CONFIG_HAKIOS_ADRENO=y
 
-# the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit ... [hakios.mali.c, hakios.mali.cpp; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# a Mali GPU brought up step by step (mali=N, 9 for all), the Galaxy S9's G72 or the Note FE's T880, its SoC's side a ... [hakios.mali.c, hakios.mali.cpp]
 CONFIG_HAKIOS_MALI=y
+
+# the Exynos 9810's side of the Galaxy S9's Mali-G72 (mali_soc=exynos9810, the default): the G3D's supply through ... [hakios.exynos9810_g3d.c; requires CONFIG_HAKIOS_MALI, CONFIG_HAKIOS_EXYNOS_ACPM]
+CONFIG_HAKIOS_EXYNOS9810_G3D=y
 
 # the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, ... [hakios.exynos_dpu.c]
 CONFIG_HAKIOS_EXYNOS_DPU=y
@@ -112,10 +115,10 @@ CONFIG_HAKIOS_GOODIX=y
 # the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) [hakios.buttons.c]
 CONFIG_HAKIOS_BUTTONS=y
 
-# the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1). Bixby is ... [hakios.exynos_keys.c]
+# a Samsung phone's power, volume and Bixby/Home keys, pins of the SoC's ALIVE GPIO block (exynos_keys=1; ... [hakios.exynos_keys.c]
 CONFIG_HAKIOS_EXYNOS_KEYS=y
 
-# the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file ... [hakios.s6sy761.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_EXYNOS_ACPM]
+# the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file ... [hakios.s6sy761.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_S6SY761=y
 
 # the Galaxy S9's sensors behind its sensor hub, the MCU of the BCM4775 GNSS chip on USI_CHUB00's SPI: powered, its ... [hakios.ssp.c; requires CONFIG_HAKIOS_EXYNOS_SPI, CONFIG_HAKIOS_EXYNOS_ACPM]
@@ -148,14 +151,20 @@ CONFIG_HAKIOS_PMIC=y
 # the run handed back to the loader before the battery is flat (battery_stop=<percent>) [hakios.battguard.c]
 CONFIG_HAKIOS_BATTGUARD=y
 
-# the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's ... [hakios.exynos_cpufreq.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# an Exynos's CPU frequency governor (cpufreq_gov=1): the clusters' rates moved with the load, the touch screen and ... [hakios.exynos_cpufreq.c]
 # CONFIG_HAKIOS_EXYNOS_CPUFREQ is not set
+
+# the Exynos 9810's side of the governor (cpufreq_soc=exynos9810, the default): the Galaxy S9's two clusters, a rate ... [hakios.exynos9810_cpufreq.c; requires CONFIG_HAKIOS_EXYNOS_CPUFREQ, CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS9810_CPUFREQ is not set
 
 # the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and ... [hakios.max77705.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_BATTERY]
 CONFIG_HAKIOS_MAX77705=y
 
-# the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), ... [hakios.exynos_tmu.c; requires CONFIG_HAKIOS_EXYNOS_POWEROFF]
+# an Exynos's temperatures: its TMU (BIG, LITTLE, G3D, ISP), the SoC's side a glue (tmu_soc=: exynos9810, exynos8890), ... [hakios.exynos_tmu.c]
 CONFIG_HAKIOS_EXYNOS_TMU=y
+
+# the Exynos 9810's side of the TMU driver (tmu_soc=exynos9810, the default): the Galaxy S9's two blocks, the TMU's ... [hakios.exynos9810_tmu.c; requires CONFIG_HAKIOS_EXYNOS_TMU, CONFIG_HAKIOS_EXYNOS_POWEROFF]
+CONFIG_HAKIOS_EXYNOS9810_TMU=y
 
 # the Galaxy S9 powered off: PS_HOLD let go in the Exynos 9810's PMU, for the TMU's tmu_off=1 and for a halt ... [hakios.exynos_poweroff.c]
 CONFIG_HAKIOS_EXYNOS_POWEROFF=y
@@ -177,6 +186,27 @@ CONFIG_HAKIOS_EXYNOS_PCIE=y
 
 # the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh, is linked ... [hakios.brcmfmac.c; requires CONFIG_HAKIOS_EXYNOS_PCIE]
 CONFIG_HAKIOS_BRCMFMAC=y
+
+# the Exynos 8890's cores: Samsung's EL3 grants CPU_ON and leaves the core off, so the PMU powers it after each ... [hakios.exynos8890_cpu.c]
+# CONFIG_HAKIOS_EXYNOS8890_CPU is not set
+
+# the Exynos 8890's USB port, the SoC's half for USB_GADGET (usb_gadget_soc=exynos8890): the PMU's isolation, the USB3 ... [hakios.exynos8890_usb.c; requires CONFIG_HAKIOS_USB_GADGET]
+# CONFIG_HAKIOS_EXYNOS8890_USB is not set
+
+# the Exynos 8890's DECON_F as the display's scan-out (MiniIOMobileFramebuffer.cpp, fb_flip=1): frames flipped between ... [hakios.exynos8890_decon.c]
+# CONFIG_HAKIOS_EXYNOS8890_DECON is not set
+
+# the Exynos 8890's side of the Note FE's Mali-T880 (mali_soc=exynos8890): the G3D block as S-Boot leaves it, read ... [hakios.exynos8890_g3d.c; requires CONFIG_HAKIOS_MALI]
+# CONFIG_HAKIOS_EXYNOS8890_G3D is not set
+
+# the Exynos 8890's side of the TMU driver (tmu_soc=exynos8890): the Note FE's four blocks (MNGS, APOLLO, GPU, ISP), ... [hakios.exynos8890_tmu.c; requires CONFIG_HAKIOS_EXYNOS_TMU]
+# CONFIG_HAKIOS_EXYNOS8890_TMU is not set
+
+# the MAX77854 (charger, fuel gauge, MUIC) on HSI2C 0x13650000: the MUIC's USB switch and status and the charger's ... [hakios.max77854.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# CONFIG_HAKIOS_MAX77854 is not set
+
+# the S2MPS16 PMIC on HSI2C 0x10550000: the touch screen's supplies (LDO32, LDO33) read, for the S6SY761 driver's ... [hakios.s2mps16.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# CONFIG_HAKIOS_S2MPS16 is not set
 
 #
 # CPU, memory and boot (21)
@@ -381,7 +411,7 @@ CONFIG_UFS=2
 # read by hakios.ufs.c (kernel)
 # CONFIG_UFS_NATIVE_SOAK is not set
 
-# the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
+# the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, exynos8890
 # CONFIG_UFS_NATIVE_SOC is not set
 
 # read by hakios.ufshc.c (kernel)
@@ -409,7 +439,7 @@ CONFIG_UFS=2
 # CONFIG_VIRTIO_BLK_RW is not set
 
 #
-# Touch and buttons (17)
+# Touch and buttons (21)
 #
 
 # the touch screen, and the power and volume buttons
@@ -424,14 +454,23 @@ CONFIG_TOUCHSCREEN=y
 # read by hakios.exynos_keys.c (kernel)
 # CONFIG_EXYNOS_KEYS is not set
 
+# the board's pins (boards[]: starlte, gracerlte)
+# CONFIG_EXYNOS_KEYS_BOARD is not set
+
+# read by hakios.exynos_dpu.c, hakios.s6sy761.c (kernel)
+# CONFIG_FB_ASPECT is not set
+
 # a short press of the power key that many seconds after boot, and another ten seconds later, given to Darwin as the ...
 # CONFIG_PRESS_POWER is not set
 
 # read by hakios.buttons.c (kernel)
 # CONFIG_PRESS_POWER_MS is not set
 
-# every address below belongs to this phone
+# read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761 is not set
+
+# the board's bus and IRQ pin (boards[]: starlte, gracerlte)
+# CONFIG_S6SY761_BOARD is not set
 
 # the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
 # CONFIG_S6SY761_IPCLK is not set
@@ -447,6 +486,9 @@ CONFIG_TOUCHSCREEN=y
 
 # the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
 # CONFIG_S6SY761_TRACE is not set
+
+# a slow reader gets the newest pending MOVE, keeping DOWN/UP ordering
+# CONFIG_TOUCH_COALESCE is not set
 
 # read by hakios.goodix.c (kernel)
 # CONFIG_TOUCH_FLIP is not set
@@ -464,7 +506,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (105)
+# GPU and display (115)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -518,6 +560,9 @@ CONFIG_GPU=y
 # the refresh rate told to CoreAnimation (IOMFBDisplayRefresh) when it is not to be fb_hz's
 # CONFIG_FB_CA_HZ is not set
 
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_CPU is not set
+
 # which pixels of the panel each frame changed (it costs: the panel's memory is slow to read)
 # CONFIG_FB_DIFF is not set
 
@@ -537,12 +582,15 @@ CONFIG_GPU=y
 # CONFIG_FB_MEASURE is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_NATIVEUI is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_PRI is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_QUEUE is not set
 
-# the thread handing the swaps over made real-time, once for each such thread: a period of a refresh, fb_rt_us
+# the thread handing swaps over made real-time, once per such thread: fb_rt_us of processor time per refresh, ...
 # CONFIG_FB_RT is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
@@ -603,6 +651,9 @@ CONFIG_GPU=y
 # CONFIG_GLGROUP is not set
 
 # read by eagl.c (user space)
+# CONFIG_GLHASH is not set
+
+# read by eagl.c (user space)
 # CONFIG_GLNUMBERS is not set
 
 # read by eagl.c (user space)
@@ -616,6 +667,9 @@ CONFIG_GPU=y
 
 # read by eagl.c (user space)
 # CONFIG_GLPROF is not set
+
+# the looks that find it waiting inside a frame instead (its stack is where it waits from)
+# CONFIG_GLPROF_WAIT is not set
 
 # read by eagl.c (user space)
 # CONFIG_GLSHADERS is not set
@@ -707,6 +761,12 @@ CONFIG_GPU=y
 # the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
 # CONFIG_MALI_ACPM is not set
 
+# read by hakios.mali.cpp (kernel)
+# CONFIG_MALI_CACHE_PROFILE is not set
+
+# every second, how many requests of each kind the programs made and the kernel's time in them
+# CONFIG_MALI_CALLS is not set
+
 # the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
 # CONFIG_MALI_FASTMAP is not set
 
@@ -725,14 +785,26 @@ CONFIG_GPU=y
 # read by hakios.mali.c (kernel)
 # CONFIG_MALI_NAP_US is not set
 
+# with mali_lock held, after a job chain
+# CONFIG_MALI_PEEK is not set
+
 # PLL_G3D left as the boot left it (the step stops if it does not run)
 # CONFIG_MALI_PLL is not set
+
+# the SoC's glue: exynos9810 (the Galaxy S9's, the default) or exynos8890 (the Note FE's) (a glue's own boot-args are ...
+# CONFIG_MALI_SOC is not set
 
 # a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
 # CONFIG_MALI_TRACE is not set
 
 # BUCK6 target in microvolts, 300000..950000 in 6250-uV steps (default 950000)
 # CONFIG_MALI_UV is not set
+
+# read by hakios.mali.cpp (kernel)
+# CONFIG_MCP is not set
+
+# read by hakios.mali.cpp (kernel)
+# CONFIG_MCS is not set
 
 # say where Metal's device is (docs/metal-plan.md, step 1)
 # CONFIG_METAL is not set
@@ -1388,7 +1460,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_TORCH_SECS is not set
 
 #
-# Chip, thermal and PMIC (19)
+# Chip, thermal and PMIC (20)
 #
 
 # read the chip's identity from the firmware's shared memory: kern.hakios.soc_* (SoC number, revision, board)
@@ -1441,6 +1513,9 @@ CONFIG_MODEM_AGAIN=y
 
 # how often to read (200 to 60000; 1000, the BIG zone's polling-delay)
 # CONFIG_TMU_POLL is not set
+
+# the SoC's glue, exynos9810 (the Galaxy S9's) or exynos8890 (the Note FE's); without it the one
+# CONFIG_TMU_SOC is not set
 
 # step 3's limit for the SoC's zones (40 to 115; 110)
 # CONFIG_TMU_STOP is not set
@@ -1528,7 +1603,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (82)
+# User space (83)
 #
 
 # read by inject_sb.c (user space)
@@ -1617,6 +1692,9 @@ CONFIG_MODEM_AGAIN=y
 
 # the load window (20 to 200; 40)
 # CONFIG_CPUFREQ_GOV_MS is not set
+
+# read by hakios.exynos_cpufreq.c (kernel)
+# CONFIG_CPUFREQ_SOC is not set
 
 # read by 1002-avf-security-level.patch (kernel)
 # CONFIG_CS_RELAX_PLATFORM_TASK_PORTS is not set
@@ -1822,7 +1900,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SHUB_SENSORS is not set
 
 #
-# USB (9)
+# USB (11)
 #
 
 # the steps (0, or none: nothing)
@@ -1851,4 +1929,10 @@ CONFIG_MODEM_AGAIN=y
 
 # let the link suspend the 2.0 PHY when idle (GUSB2PHYCFG SUSPHY, as Linux does; off by default)
 # CONFIG_USB_GADGET_SUSPHY is not set
+
+# read by hakios.dwc3.c (kernel)
+# CONFIG_USB_GADGET_TX_CHUNK is not set
+
+# read by hakios.dwc3.c (kernel)
+# CONFIG_USB_TX is not set
 

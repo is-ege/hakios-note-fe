@@ -74,7 +74,7 @@ native_keyboard_size(CGSize size)
 {
     if (size.width >= 320 && size.width <= 420 && size.height > 100 && size.height < 500) {
         double before = size.width;
-        size.width = logical_width(1440);
+        size.width = logical_width();
         if (__atomic_fetch_add(&keyboard_size_calls, 1, __ATOMIC_RELAXED) < 16)
             say("fb_nativeui: %s: keyboard size provider %.3fx%.3f -> %.3fx%.3f\n",
                 getprogname(), before, size.height, size.width, size.height);

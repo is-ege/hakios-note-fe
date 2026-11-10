@@ -24,6 +24,8 @@
  *     SpringBoard was busy waking the display: see lock_long_press().
  *   - A long press on the lock screen's wallpaper does not open the poster switcher, which the
  *     window server here shows as a black screen: see poster_switcher_allowed().
+ *   - Without a Metal device the posters draw nothing, so the wallpaper is a still picture: see
+ *     poster_variant_view_did_load().
  *   - With brightness_bridge=1 the brightness the user sets reaches the panel, which CoreBrightness
  *     alone never does here: see brightness_bridge().
  *   - Darwin notifications as a remote control, for scripts (rwtouch notify NAME):
@@ -35,6 +37,7 @@
  *     that have no window (chronod's, where the home screen's widgets are drawn: rc.jobs.widgets).
  */
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CGGeometry.h>
 #include <time.h>
 #include <IOKit/IOKitLib.h>
 #include <dispatch/dispatch.h>
@@ -727,6 +730,7 @@ battery_post_notifications(void)
 /* ---- the lock screen's clock without a GPU ------------------------------------------------------- */
 
 #define HAKIOS_GL "/redwood/lib/libhakios.gl.dylib"
+#define HAKIOS_DISPLAY "/redwood/lib/libhakios.display.dylib"
 
 /* Does the window server draw with OpenGL ES? The same question, asked the same way, as opengl_es() in inject.c. */
 static bool
@@ -954,6 +958,50 @@ switcher_wallpaper_overlay(id self, SEL selector)
 	if (wanted) {
 		original_switcher_wallpaper_overlay(self, selector);
 	}
+}
+
+/*
+ * A still wallpaper where the posters cannot draw. PosterBoard and the posters render with Metal: without a
+ * device PosterBoard aborts making its snapshot renderer ([nil newCommandQueue] into a dictionary), and the hosted
+ * poster scenes stay black. So the lock poster's view gets a picture of the stock Clownfish background
+ * on top of its own layers (zPosition, since the scene hosts are added after viewDidLoad); the home screen shows
+ * the lock poster through a portal, its dimming included. Nothing changes where a Metal device exists.
+ */
+#define STILL_WALLPAPER "/Library/Wallpaper/Collections/Clownfish~iphone.wallpaperCollection/Wallpapers/" \
+	"7420.Clownfish-430w-932h@3x~iphone.wallpaper/7420.Clownfish_Background-430w-932h@3x~iphone.ca/assets/Background.HEIC"
+static void (*original_poster_variant_view_did_load)(id self, SEL selector);
+
+static void
+poster_variant_view_did_load(id self, SEL selector)
+{
+	static id image;                /* decoded once; the lock poster's view is made again when the poster changes */
+	void *metal = dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_LAZY);
+	id (*create)(void) = metal != NULL ? (id (*)(void))dlsym(metal, "MTLCreateSystemDefaultDevice") : NULL;
+	id view, still;
+
+	original_poster_variant_view_did_load(self, selector);
+	if (strcmp(object_getClassName(self), "PBUIPosterLockViewController") != 0 || (create != NULL && create() != NULL)) {
+		return;
+	}
+	if (image == NULL) {
+		image = SEND1(id, objc_getClass("UIImage"), "imageWithContentsOfFile:", id, (id)CFSTR(STILL_WALLPAPER));
+		image = image != NULL ? SEND(id, image, "retain") : NULL;
+		say("hakios: the still wallpaper: %s\n", image != NULL ? "the Clownfish background" : "NOT decoded (" STILL_WALLPAPER ")");
+	}
+	if (image == NULL) {
+		return;
+	}
+	view = SEND(id, self, "view");
+	still = SEND1(id, SEND(id, objc_getClass("UIImageView"), "alloc"), "initWithImage:", id, image);
+	SEND1(void, still, "setFrame:", CGRect, SEND(CGRect, view, "bounds"));
+	SEND1(void, still, "setAutoresizingMask:", unsigned long, 2 | 16);     /* flexible width and height */
+	SEND1(void, still, "setContentMode:", long, 2);                         /* UIViewContentModeScaleAspectFill */
+	SEND1(void, still, "setClipsToBounds:", BOOL, YES);
+	/* the picture's top 6% is black where Clownfish's foreground layer would cover it */
+	SEND1(void, SEND(id, still, "layer"), "setContentsRect:", CGRect, CGRectMake(0, 0.07, 1, 0.93));
+	SEND1(void, SEND(id, still, "layer"), "setZPosition:", double, 1000);
+	SEND1(void, view, "addSubview:", id, still);
+	SEND(void, still, "release");
 }
 
 /*
@@ -2558,6 +2606,10 @@ hakios_springboard_init(void)
 		return;
 	}
 	caenv();
+	/* fb_nativeui's screen geometry, as in backboardd (inject.c) */
+	if (dlopen(HAKIOS_DISPLAY, RTLD_NOW) == NULL) {
+		say("hakios: %s: %s\n", HAKIOS_DISPLAY, dlerror());
+	}
 	/*
 	 * The tweaks of the package manager's prefix, if one is installed: ElleKit's loader
 	 * (/var/jb/usr/lib/TweakLoader.dylib) reads /var/jb/usr/lib/TweakInject and opens the tweaks
@@ -2599,6 +2651,8 @@ hakios_springboard_init(void)
 	    0x1c507e0fcUL, (IMP)poster_switcher_allowed);
 	original_switcher_wallpaper_overlay = (void (*)(id, SEL))replace_method("SBAppSwitcherPageView",
 	    "_createOrDestroyWallpaperOverlayView", 0x1c4af7860UL, (IMP)switcher_wallpaper_overlay);
+	original_poster_variant_view_did_load = (void (*)(id, SEL))replace_method("PBUIPosterVariantViewController", "viewDidLoad",
+	    0x1b0cf0618UL, (IMP)poster_variant_view_did_load);
 	/*
 	 * Battery hooks on UIDevice: these are the methods every app and SpringBoard itself calls, so
 	 * hooking them here in the SpringBoard process covers both the status bar and any app that

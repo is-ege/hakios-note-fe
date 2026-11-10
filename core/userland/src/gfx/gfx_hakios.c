@@ -85,6 +85,14 @@ hakios_gl_pace(struct hakios_gl *gl)
 	return gfx_pace(gl->gfx);
 }
 
+/* the host's GPU draws into its own memory: no processor caches to keep clean here */
+void
+hakios_gl_gpu_only(struct hakios_gl *gl, uint32_t surface)
+{
+	(void)gl;
+	(void)surface;
+}
+
 int
 hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t id)
 {

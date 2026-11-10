@@ -55,6 +55,7 @@ extern const void *_dyld_get_shared_cache_range(size_t *length);
 
 #define CACHE_BASE 0x180000000UL                /* where the cache was built to be, before the slide */
 #define HAKIOS_GL "/redwood/lib/libhakios.gl.dylib"
+#define HAKIOS_DISPLAY "/redwood/lib/libhakios.display.dylib"
 
 static uintptr_t slide;
 
@@ -1698,6 +1699,12 @@ hakios_init(void)
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
 		size_t size = sizeof(arguments) - 1;
+
+		/* fb_nativeui's display modes (it does nothing without that boot-arg); opened here, not inserted: one inserted
+		 * library per program is what is reliable */
+		if (dlopen(HAKIOS_DISPLAY, RTLD_NOW) == NULL) {
+			say("hakios: %s: %s\n", HAKIOS_DISPLAY, dlerror());
+		}
 
 		/*
 		 * Boot-arg ca_vbl=1: CoreAnimation's frame clock from the display driver's refresh

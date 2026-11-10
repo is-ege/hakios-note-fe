@@ -1,0 +1,26 @@
+<!-- Made by tools/docs-gen.py from devices/gracerlte/device.conf. Do not edit: change that, then run tools/docs-gen.py. -->
+
+
+# Galaxy Note FE (`gracerlte`)
+
+| | |
+|---|---|
+| Vendor | Samsung |
+| SoC | `exynos8890` |
+| Configuration | `make gracerlte_defconfig` |
+| Maintainer | Ege (README.md) |
+| Repository | [`devices/gracerlte/`](https://github.com/oosexgang/hakios-xnu-kernel/tree/main/devices/gracerlte) |
+
+## What works
+
+| Part | State | |
+|---|---|---|
+| display | partly | S-Boot's framebuffer (0xd8000000, 1440 x 2560) on DECON_F's window 0 / VPP G1; frames flipped between three buffers at a refresh (fb_flip=1, a default; EXYNOS8890_DECON), each frame started at a TE after the last one's end; 60 a second since the DECON's VCLK is at Samsung's 42 MHz (decon_vclk42=1 from tools/mkboot.sh; S-Boot leaves 26 MHz, a frame 24 ms, 30 a second): 14.9 ms a frame, 0 underruns in 4000 frames, seen on the phone, 8 November: the tearing stripes gone, seen on the phone, 8 November; iOS laid out natively on 16:9 (fb_nativeui=2, 1440 x 2560, 450 x 800 points; nothing scaled), seen on the phone, 8 November: the home screen's spacing a little off |
+| usb | works | the kernel's log and a line console on the host's /dev/cu.usbmodem* (usb_gadget=5 usb_gadget_soc=exynos8890, defaults; the MUIC's switch to the AP, max77854_usbsw=1, from tools/mkboot.sh): DWC3 at high speed, Samsung's USB3 CAL sequence for the PHY; seen on the phone, 8 November |
+| cpu | partly | the four M1s run the kernel (cpus=4 bootcpu=4, defaults): CPU_ON through the loader's trampoline below 4 GB, then the PMU powers the core (EXYNOS8890_CPU); seen on the phone in 3 of 3 runs, 8 November; the A53s stay the loader's; the M1s' rate governed (cpufreq_gov=1, a default: drivers/power/hakios.exynos_cpufreq.c through this SoC's glue): 728 MHz idle, where S-Boot leaves them, to 2288 MHz, BUCK2 675 to 1012.5 mV (Samsung's table and this chip's ASV), with touch and frame boosts, at most 1560 MHz while the GPU runs above 600 (Samsung's rule), cooled from 76 C by the SoC's own temperatures (tmu=3, a default: EXYNOS8890_TMU; the run ends at 110 C); the measured MHz right at every level, 9 November |
+| storage | partly | the UFS controller as S-Boot left it (link up at HS-G3, one lane), taken by the kernel's own driver (ufs_native=4 ufs_native_soc=exynos8890 ufs_native_step=5, defaults): the device woken from POWERDOWN, PRDT entries of 16 bytes proven against LUN 0's MBR and GPT, both GPTs read, /dev/ufs_NAME for 24 partitions; read only (ufs_native_ro=1); seen on the phone, 8 November |
+| touch | works | the S6SY661 on HSI2C7 (s6sy761=1 s6sy761_board=gracerlte, defaults; drivers/input/hakios.s6sy761.c with the older sec_ts command set), its supplies LDO32/LDO33 of the S2MPS16 switched on (s2mps16_tsp=1 from tools/mkboot.sh; approved by Ege): taps land where pressed, events every 10-20 ms; seen on the phone, 8 November |
+| gpu | partly | the Mali-T880 MP12 (r2p0), the G3D domain on as S-Boot leaves it, through the Mali driver's 8890 glue (mali=N mali_soc=exynos8890; soc/drivers/core/hakios.exynos8890_g3d.c): reset, its 12 shader cores, L2 and tiler powered, a write-value job run through its own LPAE page tables; served to programs (mali=9: HakiosMali), and Mesa 25.0.7's panfrost (Midgard, OpenGL ES 3.1) draws gl_test's triangle right to the pixel (GL=test), seen on the phone, 8 November; and with GL=1 the window server draws every frame on it (0 GL errors; 8 November); its supplies at 650 MHz's since 8 November (mali_mhz=650 from tools/mkboot.sh: BUCK11 800 mV, BUCK6 706.25 mV, Samsung's table for this chip's ASV) and its clock after its load between 260, 546 and 650 MHz (mali_gov=1 mali_gov_frame=546, 9 November), capped by the G3D's temperature, no faults |
+| buttons | works | power, volume, Home: ALIVE GPIO pins, only read (exynos_keys=1 exynos_keys_board=gracerlte, defaults; drivers/input/hakios.exynos_keys.c): power locks and wakes, Home goes home; volume read but unused by iOS without audio; seen on the phone, 8 November |
+
+The state is what has been seen on this device, written down in `devices/gracerlte/device.conf`; a part the table does not name has not been looked at.

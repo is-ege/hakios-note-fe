@@ -240,6 +240,7 @@
 #include <sys/sysctl.h>
 #include <sys/hakios.pci.h>
 #include <sys/hakios.exynos9810_mem.h>
+#include <sys/hakios.exynos8890_mem.h>
 #include <sys/hakios.physmap.h>
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
@@ -362,6 +363,9 @@ struct ufshc_soc {
 	uint64_t carve_pa, carve_size;          /* own mode's memory: physical memory XNU does not manage; 0: XNU's own */
 	uint32_t default_slots;                 /* own mode: requests in flight at once unless ufs_native_slots= says; 0: 15 */
 	bool cnr;                               /* has UTRLCNR below UFSHCI 3.0 (cleared per slot as 3.0's) */
+	/* exynos_look's blocks beside the controller, read only: UniPro and the PMA as the 9810 lays them out (0: not read) */
+	uint64_t unipro_pa, pma_pa, pmu_phy_pa, coh_pa;
+	uint32_t coh_bits;
 	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
 	void (*nexus)(uint32_t slot, bool scsi);        /* before every doorbell */
@@ -396,6 +400,24 @@ static const struct ufshc_soc hc_socs[] = {
 		 * 0x64 (UTRLCNR, which this 2.1 controller has: it read 00000014) set). UTRLCNR cleared per slot.
 		 */
 		.default_slots = 1, .cnr = true,
+		.unipro_pa = 0x11110000, .pma_pa = 0x11124000, .pmu_phy_pa = 0x14060724, .coh_pa = 0x11010700, .coh_bits = 0x300,
+		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
+	},
+	{
+		/*
+		 * The Note FE's: Samsung's kernel for the 8890 (LineageOS android_kernel_samsung_universal8890, GPL-2.0, read
+		 * for facts): ufs@155A0000 (HCI 0x100, the vendor's 0x200 behind it with the 9810's offsets, UniPro 0x155A1000,
+		 * the PHY 0x155A1800, PMU 0x105C0724, ufs-sys 0x10E50700 bits 16-17: exynos8890.dtsi, ufs-exynos.c/.h);
+		 * UFSHCI_QUIRK_BROKEN_DWORD_UTRD and _BROKEN_REQ_LIST_CLR, a 32-bit DMA mask, ALIGNED_UPIU_SIZE 512, and PRDT
+		 * entries of 128 bytes under its CONFIG_UFS_FMP_DM_CRYPT (ufshci.h). UniPro's and the PHY's layout are not
+		 * the 9810's and are not read. Taken as S-Boot left it.
+		 */
+		.name = "exynos8890", .pa = 0x155A0000, .size = 0x100, .vs_pa = 0x155A0100, .vs_size = 0x200,
+		.prdt_bytes = true, .prd_entry = 128, .prd_max = 4096, .rsp_offset = 512, .rsp_length = 512,
+		.prdt_offset = 1024, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
+		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
+		.carve_pa = EXYNOS8890_MEM_UFS_PA, .carve_size = EXYNOS8890_MEM_SIZE(UFS), .default_slots = 1,
+		.pmu_phy_pa = 0x105C0724, .coh_pa = 0x10E50700, .coh_bits = 0x30000,
 		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
 	},
 };
@@ -645,14 +667,9 @@ hc_dma_sync(const volatile void *p, size_t bytes)
 #define EXY_CLKSTOP_REFCLK      (1u << 2)
 #define EXY_CLKSTOP_MPHY_APB    (1u << 3)
 
-/* the blocks beside the controller, read and never written here */
-#define EXY_UNIPRO_PA           0x11110000ULL   /* the ufs node's third reg, 32 KB */
+/* the blocks beside the controller (the SoC's unipro_pa, pma_pa ...), read and never written here */
 #define EXY_UNIPRO_SIZE         0x8000
-#define EXY_PMA_PA              0x11124000ULL   /* ufs-phy, 2 KB: the M-PHY's PMA */
 #define EXY_PMA_SIZE            0x800
-#define EXY_PMU_PHY_PA          0x14060724ULL   /* ufs-phy-sys: PMU UFS_PHY_CONTROL, bit 0 the isolation bypassed */
-#define EXY_SYSREG_COH_PA       0x11010700ULL   /* ufs-io-coherency: SYSREG_FSYS0, bits 8-9 */
-#define EXY_SYSREG_COH_BITS     0x300u
 #define UNIP_COMP_VERSION       0x0000
 #define UNIP_COMP_INFO          0x0004
 #define UNIP_LINKSTARTUP_CNF    0x7854
@@ -684,16 +701,16 @@ exy_peek(uint64_t pa)
 static const char *
 exynos_look(bool link)
 {
-	uint32_t pmu = exy_peek(EXY_PMU_PHY_PA), coh = exy_peek(EXY_SYSREG_COH_PA);
+	uint32_t pmu = exy_peek(hc_soc->pmu_phy_pa), coh = exy_peek(hc_soc->coh_pa);
 	uint32_t gpio = vs_read(EXY_GPIO_OUT), stop = vs_read(EXY_CLKSTOP_CTRL), force = vs_read(EXY_FORCE_HCS);
 	uint32_t cnt = vs_read(EXY_1US_TO_CNT_VAL), v2p1 = vs_read(EXY_V2P1_CTRL);
 
 	if (!link) {
-		hc_say("ufs: own: exynos: PMU UFS_PHY_CONTROL %08x (isolation %s), SYSREG_FSYS0 coherency %08x (bits 8-9 %s), "
+		hc_say("ufs: own: exynos: PMU UFS_PHY_CONTROL %08x (isolation %s), SYSREG_FSYS0 coherency %08x (bits %x %s), "
 		    "GPIO_OUT %08x (the device %s), CLKSTOP_CTRL %08x, FORCE_HCS %08x, UFS_ACG_DISABLE %08x, IOP_ACG_DISABLE %08x, "
 		    "MPHY_REFCLK_SEL %08x, 1US_TO_CNT %u (%u MHz), V2P1_CTRL %08x, vendor IS %08x\n", pmu,
-		    (pmu & 1) ? "bypassed: the PHY is on" : "ON: THE PHY IS OFF", coh, (coh & EXY_SYSREG_COH_BITS) ==
-		    EXY_SYSREG_COH_BITS ? "set: coherent" : "NOT SET", gpio, (gpio & 1) ? "out of reset" : "HELD IN RESET", stop,
+		    (pmu & 1) ? "bypassed: the PHY is on" : "ON: THE PHY IS OFF", coh, hc_soc->coh_bits, (coh & hc_soc->coh_bits) ==
+		    hc_soc->coh_bits ? "set: coherent" : "NOT SET", gpio, (gpio & 1) ? "out of reset" : "HELD IN RESET", stop,
 		    force, vs_read(EXY_UFS_ACG_DISABLE), vs_read(EXY_IOP_ACG_DISABLE), vs_read(EXY_MPHY_REFCLK_SEL),
 		    cnt & 0x3ff, cnt & 0x3ff, v2p1, vs_read(EXY_VENDOR_IS));
 		if ((pmu & 1) == 0) {
@@ -708,26 +725,30 @@ exynos_look(bool link)
 		return NULL;
 	}
 
-	if (stop & EXY_CLKSTOP_UNIPRO_PCLK) {
-		hc_say("ufs: own: exynos: UniPro at %llx not read: its APB clock is stopped (CLKSTOP_CTRL %08x)\n", EXY_UNIPRO_PA,
-		    stop);
+	if (hc_soc->unipro_pa == 0) {
+		/* (no layout of this SoC's UniPro here: DME_GET's attributes above are the link's) */
+	} else if (stop & EXY_CLKSTOP_UNIPRO_PCLK) {
+		hc_say("ufs: own: exynos: UniPro at %llx not read: its APB clock is stopped (CLKSTOP_CTRL %08x)\n",
+		    hc_soc->unipro_pa, stop);
 	} else {
-		vm_offset_t u = ml_io_map((vm_offset_t)EXY_UNIPRO_PA, EXY_UNIPRO_SIZE);
+		vm_offset_t u = ml_io_map((vm_offset_t)hc_soc->unipro_pa, EXY_UNIPRO_SIZE);
 
 		if (u != 0) {
 #define UNIP(r) (*(volatile uint32_t *)(u + (r)))
 			hc_say("ufs: own: exynos: UniPro at %llx: COMP_VERSION %08x, COMP_INFO %08x; results of the last "
 			    "DME_LINKSTARTUP %x (0: success), hibernate enter %x, exit %x, power mode change %x (1, PWR_LOCAL: "
-			    "success)\n", EXY_UNIPRO_PA, UNIP(UNIP_COMP_VERSION), UNIP(UNIP_COMP_INFO),
+			    "success)\n", hc_soc->unipro_pa, UNIP(UNIP_COMP_VERSION), UNIP(UNIP_COMP_INFO),
 			    UNIP(UNIP_LINKSTARTUP_CNF), UNIP(UNIP_H8_ENTER_IND), UNIP(UNIP_H8_EXIT_IND), UNIP(UNIP_PWR_IND));
 #undef UNIP
 		}
 	}
-	if (stop & EXY_CLKSTOP_MPHY_APB) {
+	if (hc_soc->pma_pa == 0) {
+		/* (the calibration checked is the 9810's) */
+	} else if (stop & EXY_CLKSTOP_MPHY_APB) {
 		hc_say("ufs: own: exynos: the PHY's PMA at %llx not read: its APB clock is stopped (CLKSTOP_CTRL %08x)\n",
-		    EXY_PMA_PA, stop);
+		    hc_soc->pma_pa, stop);
 	} else {
-		vm_offset_t m = ml_io_map((vm_offset_t)EXY_PMA_PA, EXY_PMA_SIZE);
+		vm_offset_t m = ml_io_map((vm_offset_t)hc_soc->pma_pa, EXY_PMA_SIZE);
 
 		for (uint32_t lane = 0; m != 0 && lane < 2; lane++) {
 #define PMA(r) (*(volatile uint32_t *)(m + PMA_TRSV(r, lane)) & 0xff)
@@ -3291,7 +3312,7 @@ ufshc_own_probe(void)
 	char name[32] = "pci";
 
 	PE_parse_boot_argn("ufs_native", &mode, sizeof(mode));
-	/* ufs_native_soc=NAME: the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810 */
+	/* ufs_native_soc=NAME: the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, exynos8890 */
 	(void)PE_parse_boot_arg_str("ufs_native_soc", name, sizeof(name));
 	return hc_own_probe(name, mode, 0);
 }
@@ -3317,9 +3338,12 @@ ufshc_take_why(void)
  * of blocks 0 and 1 of LUN 0 through this kernel's own descriptor -- two blocks, so two PRDT
  * entries of 4 KB, the second where the entry size says -- into slot 0's page, filled with a
  * pattern first; then byte for byte against the loader's reads of the same blocks (ufs=3's
- * step 1). TEST UNIT READY before it (a unit attention is answered by trying again). Only a
- * read that comes back GOOD and the same lets own mode go on; anything else is a refusal and
- * the caller gives the controller back. Nothing else carrying data is sent before it.
+ * step 1). With no loader to read them (the Note FE: no UEFI), against what LUN 0 must hold
+ * there instead: the protective MBR's 55 AA in block 0, "EFI PART" at the start of block 1 --
+ * a second entry the controller took from elsewhere leaves the pattern there. TEST UNIT READY
+ * before it (a unit attention is answered by trying again). Only a read that comes back GOOD
+ * and the same lets own mode go on; anything else is a refusal and the caller gives the
+ * controller back. Nothing else carrying data is sent before it.
  */
 static const char *
 hc_layout_read(void)
@@ -3331,8 +3355,8 @@ hc_layout_read(void)
 	uint32_t saved = hc_pol.read_luns, first = 0, diff = 0;
 	int e = EIO;
 
-	if (hc_layout_ref == NULL || hc_layout_ref_blocks < 2) {
-		return "no reference read of the loader's to check this driver's layout against";
+	if (hc_layout_ref != NULL && hc_layout_ref_blocks < 2) {
+		return "the loader's reference read is shorter than the layout read";
 	}
 	if (s->data_size < sizeof(got)) {
 		return "slot 0's page is too small for the layout read";
@@ -3358,6 +3382,15 @@ hc_layout_read(void)
 		hc_say("ufs: own: layout read: READ(10) of LUN 0's blocks 0-1 failed (%d; OCS %x, doorbell %08x, IS %08x)\n", e,
 		    hc_slots[SLOT_CONTROL].utrd[2] & 0xff, hc_read(UFSHC_UTRLDBR), hc_read(UFSHC_IS));
 		return "the layout read (READ(10) of LUN 0, LBA 0-1, this driver's descriptor) failed";
+	}
+	if (hc_layout_ref == NULL) {
+		bool gpt = got[510] == 0x55 && got[511] == 0xaa && memcmp(got + BLOCK, "EFI PART", 8) == 0;
+
+		hc_say("ufs: own: layout read: LUN 0's blocks 0-1 through this driver's descriptor (PRDT entries of %u bytes, "
+		    "offsets in %s): %02x %02x at 510, \"%.8s\" at 4096: %s\n", hc_soc->prd_entry,
+		    hc_soc->prdt_bytes ? "bytes" : "dwords", got[510], got[511], (const char *)got + BLOCK,
+		    gpt ? "a protective MBR and a GPT header, both entries landed" : "NOT A PROTECTIVE MBR AND A GPT HEADER");
+		return gpt ? NULL : "the layout read (LUN 0, LBA 0-1) through this driver's descriptor is not an MBR and a GPT";
 	}
 	for (uint32_t i = 0; i < sizeof(got); i++) {
 		if (got[i] != hc_layout_ref[i]) {
@@ -3396,7 +3429,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	}
 	if (hc_soc == NULL) {
 		hc_soc = SOC_SHARED;
-		hc_say("ufs: own: ufs_native_soc=%s: no such controller (pci, sm7325, exynos9810)\n", name);
+		hc_say("ufs: own: ufs_native_soc=%s: no such controller (pci, sm7325, exynos9810, exynos8890)\n", name);
 		return false;
 	}
 	hc_slot_buffer = hc_soc->slot_buffer;
@@ -3470,13 +3503,8 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 				 * the layout read -- this driver's own READ of LUN 0's blocks 0-1 against the loader's -- does.
 				 */
 				hc_soc_own.prd_entry = 16;
-				if (hc_layout_ref == NULL && hc_step >= 4) {
-					no = "UEFI's own read is not laid out as this driver would lay out its own, and no reference to "
-					    "read against";
-				} else {
-					hc_say("ufs: own: UEFI's leftover read is not laid out as this driver reads it (above): not "
-					    "decisive; PRDT entries of 16 bytes, to be proven by the layout read before anything else\n");
-				}
+				hc_say("ufs: own: UEFI's leftover read is not laid out as this driver reads it (above): not "
+				    "decisive; PRDT entries of 16 bytes, to be proven by the layout read before anything else\n");
 			} else if (hc_soc->prdt_bytes && verdict == 0) {
 				/*
 				 * No read of UEFI's left to tell the entry size by (UEFI reuses its slots): 16 bytes,
@@ -3485,12 +3513,8 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 				 * read fails; one on 16 reads. The layout read before anything else decides.
 				 */
 				hc_soc_own.prd_entry = 16;
-				if (hc_layout_ref == NULL && hc_step >= 4) {
-					no = "no read of UEFI's to check this driver's layout against, and no reference to read against";
-				} else {
-					hc_say("ufs: own: no read of UEFI's to check this driver's layout against: PRDT entries of 16 "
-					    "bytes, to be proven by the layout read before anything else is read\n");
-				}
+				hc_say("ufs: own: no read of UEFI's to check this driver's layout against: PRDT entries of 16 "
+				    "bytes, to be proven by the layout read before anything else is read\n");
 			} else if (hc_soc->prdt_bytes) {
 				hc_say("ufs: own: UEFI's own read agrees with this driver's layout (PRDT entries of %u bytes): the layout "
 				    "read checks it once more\n", hc_soc->prd_entry);

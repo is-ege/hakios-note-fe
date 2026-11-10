@@ -34,6 +34,8 @@ gpu      bsd/dev/hakios.s6e3ha8_gamma.h
 gpu      iokit/Kernel/hakios.backlight.cpp
 gpu      iokit/Kernel/hakios.gpu.cpp
 gpu      bsd/dev/hakios.mali.c
+gpu      bsd/dev/hakios.mali_glue.h
+gpu      bsd/dev/hakios.exynos9810_g3d.c
 gpu      bsd/dev/hakios.mali_va.h
 gpu      iokit/Kernel/hakios.mali.cpp
 gpu      iokit/Kernel/hakios.mali_cpu_cache.h
@@ -60,8 +62,11 @@ power    bsd/dev/hakios.battery.c
 power    iokit/Kernel/hakios.battery.cpp
 power    bsd/dev/hakios.max77705.c
 power    bsd/dev/hakios.exynos_cpufreq.c
+power    bsd/dev/hakios.exynos9810_cpufreq.c
+power    bsd/dev/hakios.cpufreq_glue.h
 power    bsd/dev/hakios.exynos_tmu.c
 power    bsd/dev/hakios.exynos_tmu.h
+power    bsd/dev/hakios.exynos9810_tmu.c
 power    bsd/dev/hakios.exynos_poweroff.c
 power    bsd/dev/hakios.cpufreq.c
 

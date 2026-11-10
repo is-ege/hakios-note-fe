@@ -163,3 +163,12 @@ hakios_gl_pace(struct hakios_gl *gl)
 	(void)gl;
 	return 0;
 }
+
+extern int hakios_drm_gpu_drawn(uint32_t surface);     /* tools/mesa/hakios-drm/hakios.drm.c */
+
+void
+hakios_gl_gpu_only(struct hakios_gl *gl, uint32_t surface)
+{
+	(void)gl;
+	(void)hakios_drm_gpu_drawn(surface);
+}

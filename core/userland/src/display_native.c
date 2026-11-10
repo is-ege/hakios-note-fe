@@ -1,6 +1,6 @@
-/* Opt-in S9+ native pixel canvas. Keep the existing apparent UI size while
- * extending the logical width for the full 1440 x 2960 panel. The earlier
- * padded 1368 x 2960 experiment remains supported for reproducible comparisons.
+/* Opt-in native pixel canvas (fb_nativeui=1|2 with fbwidth= and fbheight=): UIKit lays out
+ * on the panel's own shape while MobileGestalt keeps the iPhone X identity (the kernel's
+ * MiniIOMobileFramebuffer.cpp lists the same canvases).
  */
 #include <CoreGraphics/CGGeometry.h>
 #include <CoreGraphics/CGImage.h>
@@ -27,9 +27,21 @@ static Class (*original_status_provider)(id, SEL, id, id);
 static Class flat_status_provider;
 typedef struct { double top, leading, bottom, trailing; } NativeDirectionalInsets;
 static NativeDirectionalInsets (*original_status_insets)(id, SEL);
-static BOOL full_panel_profile;
+/* fb_nativeui=1: 812 points high, as the iPhone X. fb_nativeui=2: the canvas's whole-point grid.
+ * A canvas with a grid is a full panel: flat status bar, edge insets, keyboard sizes. */
+static const struct canvas { double width, height, grid_width, grid_height; } canvases[] = {
+	{ 1368, 2960, 0, 0 },           /* the S9+'s padded first experiment: the iPhone X's 375 points wide */
+	{ 1440, 2960, 396, 814 },       /* the S9+'s panel */
+	{ 1080, 2220, 396, 814 },
+	{ 1188, 2442, 396, 814 },       /* the S9+'s: 3 pixels a point */
+	{ 1440, 2560, 450, 800 },       /* the Note FE's panel, 16:9: 3.2 pixels a point */
+	/* ... drawn smaller and enlarged to the panel, 2.5 pixels a point. Not Samsung's FHD, 1080 x 1920: that is the
+	 * iPhone Plus's panel, for which CoreAnimation draws 1242 x 2208 (seen on the phone: a black screen). */
+	{ 1125, 2000, 450, 800 },
+	{ 900, 1600, 450, 800 },        /* ... 2 pixels a point */
+};
+static const struct canvas *canvas;
 static BOOL integral_point_grid;
-static double canvas_height = 2960.0;
 static void (*original_keyboard_layout)(id, SEL);
 static void (*original_emoji_layout)(id, SEL);
 static void (*previous_uncaught_exception)(id);
@@ -56,11 +68,7 @@ say(const char *format, ...)
 static BOOL
 supported_pixels(double width, double height)
 {
-	if (canvas_height == 2220)
-		return full_panel_profile && width == 1080 && height == 2220;
-	if (canvas_height == 2442)
-		return full_panel_profile && width == 1188 && height == 2442;
-	return (width == 1368 || width == 1440) && height == 2960;
+	return width == canvas->width && height == canvas->height;
 }
 
 static BOOL
@@ -71,13 +79,14 @@ native_mode(id object)
 }
 
 static double
-logical_width(double pixels)
+logical_width(void)
 {
-	return (pixels == 1440 || pixels == 1080 || pixels == 1188) ? (integral_point_grid ? 396.0 : pixels * 812.0 / canvas_height) : 375.0;
+	if (integral_point_grid) return canvas->grid_width;
+	return canvas->grid_width ? canvas->width * 812.0 / canvas->height : 375.0;
 }
 
-static double logical_height(void) { return integral_point_grid ? 814.0 : 812.0; }
-static double native_density(void) { return canvas_height / logical_height(); }
+static double logical_height(void) { return integral_point_grid ? canvas->grid_height : 812.0; }
+static double native_density(void) { return canvas->height / logical_height(); }
 
 #include "keyboard_native.inc"
 
@@ -91,7 +100,7 @@ native_init(id self, SEL command, uint64_t width, uint64_t height, uint64_t pref
 		if (__atomic_fetch_add(&mode_calls, 1, __ATOMIC_RELAXED) < 2)
 			say("fb_nativeui: %s: mode %llux%llu, layout %.9f x %.9f points, density %.9f\n",
 			    getprogname(), (unsigned long long)width, (unsigned long long)height,
-			    logical_width((double)width), logical_height(), override);
+			    logical_width(), logical_height(), override);
 	}
 	return original_init(self, command, width, height, preferred, override, refresh,
 	    gamut, hdr, rotation, virtual_mode, validity);
@@ -102,7 +111,7 @@ native_size(id self, SEL command)
 {
 	CGSize result = original_size(self, command);
 	if (native_mode(self)) {
-		double points = logical_width((double)((uint64_t (*)(id, SEL))objc_msgSend)(self, width_selector));
+		double points = logical_width();
 		return result.width > result.height ? (CGSize){logical_height(), points} : (CGSize){points, logical_height()};
 	}
 	return result;
@@ -117,7 +126,7 @@ native_bounds(id self, SEL command)
 		CGSize pixels = ((CGSize (*)(id, SEL))objc_msgSend)(mode, mode_size_selector);
 		double short_side = fmin(pixels.width, pixels.height), long_side = fmax(pixels.width, pixels.height);
 		if (supported_pixels(short_side, long_side)) {
-			double points = logical_width(short_side);
+			double points = logical_width();
 			result.size = result.size.width > result.size.height ? (CGSize){logical_height(), points} : (CGSize){points, logical_height()};
 			if (__atomic_fetch_add(&bounds_calls, 1, __ATOMIC_RELAXED) < 4)
 				say("fb_nativeui: %s: UIScreen %s = %.9f x %.9f points\n", getprogname(),
@@ -158,7 +167,7 @@ native_status_provider(id self, SEL command, id screen, id info)
 		id mode = ((id (*)(id, SEL))objc_msgSend)(screen, current_mode_selector);
 		if (mode) {
 			CGSize pixels = ((CGSize (*)(id, SEL))objc_msgSend)(mode, mode_size_selector);
-			if (full_panel_profile && supported_pixels(fmin(pixels.width, pixels.height), fmax(pixels.width, pixels.height))) {
+			if (canvas->grid_width && supported_pixels(fmin(pixels.width, pixels.height), fmax(pixels.width, pixels.height))) {
 				if (__atomic_fetch_add(&status_calls, 1, __ATOMIC_RELAXED) < 2)
 					say("fb_nativeui: %s: flat-panel status bar provider %s\n", getprogname(), class_getName(flat_status_provider));
 				return flat_status_provider;
@@ -172,8 +181,8 @@ static NativeDirectionalInsets
 native_status_insets(id self, SEL command)
 {
 	NativeDirectionalInsets result = original_status_insets(self, command);
-	if (full_panel_profile) {
-		/* Keep carrier and battery clear of the S9+'s curved top corners. */
+	if (canvas->grid_width) {
+		/* Keep carrier and battery clear of the panel's rounded top corners. */
 		result.leading = fmax(result.leading, 18.0);
 		result.trailing = fmax(result.trailing, 18.0);
 	}
@@ -231,37 +240,33 @@ native_keyboard_layout(id self, SEL command)
 	}
 }
 
+/* NAME=number as a whole word of the boot-args; -1 if absent */
+static long
+boot_arg(const char *args, const char *name)
+{
+	size_t length = strlen(name);
+	for (const char *p = args; (p = strstr(p, name)) != NULL; p += length) {
+		char *end;
+		if ((p == args || p[-1] == ' ') && p[length] == '=') {
+			long value = strtol(p + length + 1, &end, 10);
+			return end > p + length + 1 && (*end == '\0' || *end == ' ') ? value : -1;
+		}
+	}
+	return -1;
+}
+
 __attribute__((constructor)) static void
 install_native_display(void)
 {
 	char args[1024] = "";
 	size_t size = sizeof(args)-1;
 	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0) return;
-	const char *arg = strstr(args, "fb_nativeui=");
-	if (arg == NULL || (arg != args && arg[-1] != ' ') || (arg[12] != '1' && arg[12] != '2') ||
-	    (arg[13] != '\0' && arg[13] != ' ')) return;
-	const char *width_arg = strstr(args, "fbwidth=1440");
-	full_panel_profile = width_arg && (width_arg == args || width_arg[-1] == ' ') &&
-	    (width_arg[12] == '\0' || width_arg[12] == ' ');
-	const char *fhd_width = strstr(args, "fbwidth=1080");
-	const char *fhd_height = strstr(args, "fbheight=2220");
-	if (fhd_width && (fhd_width == args || fhd_width[-1] == ' ') &&
-	    (fhd_width[12] == '\0' || fhd_width[12] == ' ') &&
-	    fhd_height && (fhd_height == args || fhd_height[-1] == ' ') &&
-	    (fhd_height[13] == '\0' || fhd_height[13] == ' ')) {
-		full_panel_profile = YES;
-		canvas_height = 2220.0;
-	}
-	const char *integer_width = strstr(args, "fbwidth=1188");
-	const char *integer_height = strstr(args, "fbheight=2442");
-	if (integer_width && (integer_width == args || integer_width[-1] == ' ') &&
-	    (integer_width[12] == '\0' || integer_width[12] == ' ') &&
-	    integer_height && (integer_height == args || integer_height[-1] == ' ') &&
-	    (integer_height[13] == '\0' || integer_height[13] == ' ')) {
-		full_panel_profile = YES;
-		canvas_height = 2442.0;
-	}
-	integral_point_grid = full_panel_profile && arg[12] == '2';
+	long mode = boot_arg(args, "fb_nativeui"), pixels_wide = boot_arg(args, "fbwidth"), pixels_high = boot_arg(args, "fbheight");
+	if (mode != 1 && mode != 2) return;
+	for (unsigned i = 0; i < sizeof(canvases) / sizeof(canvases[0]); i++)
+		if (canvases[i].width == pixels_wide && canvases[i].height == pixels_high) canvas = &canvases[i];
+	if (canvas == NULL) return;
+	integral_point_grid = canvas->grid_width && mode == 2;
 	say("fb_nativeui: %s: constructor entered\n", getprogname());
 	if (dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW) == NULL) {
 		say("fb_nativeui: %s: FrontBoardServices unavailable\n", getprogname());
@@ -337,7 +342,7 @@ install_native_display(void)
 		say("fb_nativeui: %s: full-panel status bar selection hook installed\n", getprogname());
 	}
 	Method insets = flat_status_provider ? class_getInstanceMethod(flat_status_provider, sel_registerName("edgeInsets")) : NULL;
-	if (full_panel_profile && insets && strcmp(method_getTypeEncoding(insets), "{NSDirectionalEdgeInsets=dddd}16@0:8") == 0) {
+	if (canvas->grid_width && insets && strcmp(method_getTypeEncoding(insets), "{NSDirectionalEdgeInsets=dddd}16@0:8") == 0) {
 		original_status_insets = (NativeDirectionalInsets (*)(id, SEL))method_getImplementation(insets);
 		method_setImplementation(insets, (IMP)native_status_insets);
 		say("fb_nativeui: %s: status bar horizontal insets at least 18 points\n", getprogname());

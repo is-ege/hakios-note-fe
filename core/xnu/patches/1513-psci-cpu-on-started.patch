@@ -1,0 +1,23 @@
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+--- a/osfmk/arm64/psci_smp.c
++++ b/osfmk/arm64/psci_smp.c
+@@ -70,6 +70,11 @@
+  * left out, it is a stub that says go ahead (hakios.stubs.c).
+  */
+ extern int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
++/*
++ * HakiOS (patch 1513): told after a CPU_ON the firmware granted. The Exynos 8890's EL3 grants it and leaves the core off:
++ * the PMU powers it (devices/gracerlte/soc/drivers/core/hakios.exynos8890_cpu.c); elsewhere a stub that does nothing.
++ */
++extern void hakios_psci_cpu_on_started(int cpu, uint32_t mpidr);
+ 
+ /* The firmware is called with HVC, not SMC. (start.s reads this too, at its physical address.) */
+ uint32_t psci_smp_hvc;
+@@ -478,6 +483,7 @@
+ 		return KERN_FAILURE;
+ 	}
+ 	os_atomic_or(&psci_smp_started, 1u << cpu, relaxed);
++	hakios_psci_cpu_on_started(cpu, phys_id);
+ 
+ 	clock_interval_to_deadline(PSCI_SMP_START_SECONDS, NSEC_PER_SEC, &deadline);
+ 	do {

@@ -6,9 +6,10 @@
  *
  * Device-neutral: the DWC3 in device mode, its event buffer, endpoint 0 and the bulk endpoints are here; the CDC-ACM
  * descriptors and requests are plain C in hakios.usb_acm.h (checked on the build machine: tools/usb-acm-test.sh); what
- * the SoC has to do first (clocks, power, the PHY) is a glue's (hakios.usb_glue.h), today only the Exynos 9810's
- * (hakios.exynos_usb.c, the Galaxy S9). Polled from a thread call, no interrupt; one control transfer at a time, one
- * TRB per transfer (LST set), each in its own cache line of memory mapped uncached.
+ * the SoC has to do first (clocks, power, the PHY) is a glue's (hakios.usb_glue.h): the Exynos 9810's
+ * (hakios.exynos_usb.c, the Galaxy S9) and the Exynos 8890's (devices/gracerlte/soc/, the Galaxy Note FE). Polled
+ * from a thread call, no interrupt; one control transfer at a time, one TRB per transfer (LST set), each in its own
+ * cache line of memory mapped uncached.
  *
  * The tree had no USB device code of its own: the POCO's loader serves fastboot through Qualcomm's UEFI USB protocol
  * (xnuloader/loader.c, usb_start()), which the S9's Silicium UEFI does not have (no USB driver in its FD), and nothing
@@ -1815,6 +1816,8 @@ usb_gadget_init(void)
 	}
 	if (strcmp(soc, "exynos9810") == 0) {
 		glue = hakios_usb_glue_exynos9810();
+	} else if (strcmp(soc, "exynos8890") == 0) {
+		glue = hakios_usb_glue_exynos8890();
 	}
 	if (glue == NULL) {
 		say("usb: usb_gadget=%u, but no glue for \"%s\" in this kernel; off\n", steps, soc);

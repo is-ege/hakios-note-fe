@@ -1095,6 +1095,8 @@ surface_to_texture(struct eagl *e, struct image *image)
 	e->upload_bytes += row * (size_t)image->height;
 }
 
+static GLuint shown_texture;                    /* (glshow, below: show_texture()) */
+
 /* What has been drawn into a texture, into its IOSurface, unless it is there (frame_end() waits for it). */
 static void
 target_to_surface(struct eagl *e, struct image *image)
@@ -1124,15 +1126,15 @@ target_to_surface(struct eagl *e, struct image *image)
 		    image->invert ? 0 : image->height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)draw);
+	}
+	if (image->mirror != 0 || image->shared) {
+		/* whoever looks at the surface's seed is to see that it has changed; the GPU's driver, that only the GPU draws it
+		 * (CoreAnimation's write locks and this one write nothing; glshow's show_texture() does, with the processor) */
 		if (IOSurfaceLock(surface, 0, NULL) == 0) {
 			IOSurfaceUnlock(surface, 0, NULL);
 		}
-		return;
-	}
-	if (image->shared) {
-		/* whoever looks at the surface's seed is to see that it has changed */
-		if (IOSurfaceLock(surface, 0, NULL) == 0) {
-			IOSurfaceUnlock(surface, 0, NULL);
+		if (shown_texture == 0) {
+			hakios_gl_gpu_only(e->gl, IOSurfaceGetID(surface));
 		}
 		return;
 	}
@@ -1359,12 +1361,15 @@ show_texture(struct eagl *e, struct image *image)
  * build machine against the unstripped libraries (libOSMesa's is in xnu-deps/build/mesa/build-*). The frame took 6 to
  * 7 ms of the processor at 146 draws (tools/frames.py): this says in what.
  * While the drawing thread is held (thread_suspend) nothing here allocates or takes a lock: it may hold malloc's.
+ * Boot-arg glprof_wait=1: the looks that find it waiting inside a frame instead (its stack is where it waits from).
  */
 #define PROF_SLOTS      8192
 #define PROF_DUMP       4000
 #define PROF_SHOWN      30
 #define PROF_DEPTH      9                       /* the program counter, the link register, seven callers from the frame chain */
 static unsigned prof_us;                        /* 0: no profile */
+static bool prof_waits;                         /* glprof_wait=1 */
+static volatile bool prof_in_frame;
 static thread_t prof_thread;                    /* the drawing thread, the first that begins a frame */
 static struct {
 	uint64_t stack[PROF_DEPTH];
@@ -1393,7 +1398,7 @@ prof_main(__unused void *argument)
 		usleep(prof_us);
 		looks++;
 		if (thread_info(prof_thread, THREAD_BASIC_INFO, (thread_info_t)&basic, &count) != KERN_SUCCESS ||
-		    basic.run_state != TH_STATE_RUNNING) {
+		    (basic.run_state == TH_STATE_RUNNING) == prof_waits || (prof_waits && !prof_in_frame)) {
 			continue;
 		}
 		if (thread_suspend(prof_thread) != KERN_SUCCESS) {
@@ -1431,12 +1436,13 @@ prof_main(__unused void *argument)
 				break;
 			}
 		}
-		if (++taken < PROF_DUMP) {
+		if (++taken < (prof_waits ? PROF_DUMP / 8 : PROF_DUMP)) {      /* (waits are fewer looks) */
 			continue;
 		}
 		/* the most frequent first, each as its image and the offset in it (dladdr: not while the thread was held) */
 		qsort(prof_table, PROF_SLOTS, sizeof(prof_table[0]), prof_by_count);
-		say("hakios-prof: %u samples of the drawing thread on a processor, in %u looks:\n", taken, looks);
+		say("hakios-prof: %u samples of the drawing thread %s, in %u looks:\n", taken,
+		    prof_waits ? "waiting inside a frame" : "on a processor", looks);
 		for (unsigned i = 0; i < PROF_SHOWN && prof_table[i].count != 0; i++) {
 			char line[1024];
 			int at = snprintf(line, sizeof(line), "hakios-prof: %.1f%%", 100.0 * prof_table[i].count / taken);
@@ -1472,6 +1478,7 @@ frame_begin(struct eagl *e)
 		return;
 	}
 	e->in_frame = true;
+	prof_in_frame = true;
 	e->began = now_us();
 	if (prof_us != 0 && prof_thread == MACH_PORT_NULL) {
 		pthread_t sampler;
@@ -1585,6 +1592,7 @@ frame_end(struct eagl *e, bool finished)
 	}
 	after = now_us();
 	e->in_frame = false;
+	prof_in_frame = false;
 	e->frames++;
 	if (latency_lines) {
 		uint64_t tpidr;
@@ -4705,6 +4713,7 @@ install(void)
 		if ((argument = strstr(arguments, "glprof=")) != NULL) {
 			prof_us = (unsigned)strtoul(argument + 7, NULL, 10);    /* (frame_begin() starts the profile: prof_main()) */
 		}
+		prof_waits = strstr(arguments, "glprof_wait=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);
 		}

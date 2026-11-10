@@ -20,14 +20,15 @@ driver BUTTONS
 
 driver EXYNOS_KEYS
 	file    bsd/dev/hakios.exynos_keys.c
-	help    the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1).
-	help    Bixby is the home button
+	help    a Samsung phone's power, volume and Bixby/Home keys, pins of the SoC's ALIVE GPIO block (exynos_keys=1;
+	help    exynos_keys_board=: starlte, gracerlte). Bixby or Home is the home button
 
 driver S6SY761
 	file    bsd/dev/hakios.s6sy761.c
-	requires EXYNOS_HSI2C EXYNOS_ACPM
+	requires EXYNOS_HSI2C
 	help    the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this
-	help    file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz)
+	help    file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz); the Note FE's S6SY661 with s6sy761_board=gracerlte.
+	help    The S9's supply cycle needs EXYNOS_ACPM
 
 driver SSP
 	file    bsd/dev/hakios.ssp.c

@@ -90,5 +90,6 @@ struct hakios_drm_surface {
 	uint32_t width, height, pixel_format, planes;   /* and what they are */
 };
 int hakios_drm_surface(int fd, struct hakios_drm_surface *surface);
+int hakios_drm_gpu_drawn(uint32_t surface);
 
 #endif

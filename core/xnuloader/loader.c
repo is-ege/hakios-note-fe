@@ -729,6 +729,8 @@ struct platform {
 	uint32_t parked_cores;           /* a bit for each core the boot loader leaves running in a loop of its own: never the kernel's */
 	uint8_t affinity_unreliable;     /* PSCI AFFINITY_INFO says "on" of cores that are off: CPU_ON's answer is what counts */
 	uint64_t payload_home;           /* not 0: the payload is moved here (or a 64 MiB step above) from PAYLOAD_BASE at the start */
+	uint8_t pmu_cpu_power;           /* Exynos 8890: CPU_ON leaves the core off; recovery_pmu's CPU_CONFIGURATION turns it on (pmu_cpu_power_on) */
+	uint8_t cpu_on_low_entry;        /* the firmware keeps only CPU_ON's entry's low 32 bits: the kernel's cores start at kernel_cpu_entry */
 	struct { uint64_t base, size; const char *what; } keep_out[PLATFORM_KEEP_OUT_MAX];
 	const char *data_part;           /* a port with no darwin: the one partition, by name, ufs_write=1 may write (block_is_data_part) */
 	const struct platform *sibling_of; /* not NULL: told apart from this one only by loader_platform= (platform_sibling) */
@@ -936,6 +938,53 @@ static const struct platform platform_frankel = {
 	.fb_base = 0,
 };
 
+static const struct platform platform_gracerlte = {
+	/*
+	 * Samsung Galaxy Note FE (SM-N935F), Exynos 8890. No UEFI: S-Boot starts the Note FE's boot shim (shim/ in the port's
+	 * tree), which offers this loader the UEFI services it uses over S-Boot's device tree, at EL1. Told apart by that
+	 * tree's root compatible. Every value is from the phone's own device tree (Lineage's dt.img, entry 0x0b) and what
+	 * the port's probe saw on it (PLAN.md, Phase 0).
+	 */
+	.name = "gracerlte", .compatible = "samsung,exynos8890",
+	/* the SoC's registers from 0x10000000; a GIC-400 (distributor 0x11001000, CPU interface 0x11002000) */
+	.io_base = 0x10000000, .io_size = 0x10000000,
+	.gic_dist = 0x11001000, .gic_cpu = 0x11002000, .uart = 0,
+	/*
+	 * Cores 0-3 are Cortex-A53s (MPIDR 0x100-0x103: S-Boot starts 0x100), 4-7 Samsung's Exynos M1s (0x000-0x003). Only
+	 * the M1s have the 16 KB translation granule XNU needs (probe: ID_AA64MMFR0_EL1.TGran16), so the kernel runs on
+	 * them (bootcpu=4), as on the S9.
+	 */
+	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x100, 0x101, 0x102, 0x103, 0x000, 0x001, 0x002, 0x003 },
+	.small_cores = 0x0f,
+	/* the timer's clock-frequency in the tree, for an EL3 that leaves CNTFRQ_EL0 at 0 */
+	.timer_hz = 26000000,
+	/*
+	 * TWRP's ramoops (32 KB at 0x92000000), which TWRP reads back after the restart: the loader's log in its pmsg zone
+	 * (4 KB, seen at 0x92004000 as pmsg-ramoops-0), the kernel's from its start in the 16 KB dump record before it.
+	 * Reserved by the shim (memmap.c: Samsung's log regions).
+	 */
+	.ram_log = 0x92004000, .ram_log_size = 0x1000,
+	.ram_dump = 0x92000000, .ram_dump_size = 0x4000,
+	/* the PMU (system-controller@105C0000): INFORM2/3 send the restart to TWRP, SWRESET (+0x400) makes it */
+	.recovery_pmu = 0x105C0000, .pmu_swreset = 0x400,
+	/* Samsung's EL3 answers CPU_ON with 0 and leaves the core off: the PMU powers it (pmu_cpu_power_on) */
+	.pmu_cpu_power = 1,
+	/*
+	 * ... and it keeps only the entry's low 32 bits (Samsung's kernel starts its cores below 4 GB): the kernel, in the
+	 * high bank, has its other cores started through kernel_cpu_entry. Seen on the phone, 8 November 2026: with the
+	 * kernel's own entry (0x8_8340_2000) the M1s were granted, powered, and never arrived.
+	 */
+	.cpu_on_low_entry = 1,
+	/* with the kernel on an M1 (bootcpu=4), this A53 watches it and keeps the log on the way */
+	.log_other_cpu = 1,
+	/*
+	 * The CP's memory (reserved-memory modem_if, 0xF0000000 + 0x8800000), where the shim puts the payload: moved out
+	 * first, to free RAM between the camera's pool (to 0xDEC00000) and modem_if. Nothing starts the CP before XNU.
+	 */
+	.payload_home = 0xE0000000,
+	.keep_out = { { 0xF0000000, 0x08800000, "CP: modem_if" } },
+};
+
 /*
  * Not a phone: QEMU virt as close to the Pixel 10 as it goes (socs/lga/shim/qemu-test.sh): EL2 (virtualization=on) for
  * the boot shim, which starts this loader without UEFI and passes PSCI on; a GICv4 (gic-version=4: 256 KB redistributor
@@ -960,6 +1009,7 @@ static const struct platform *const platforms[] = {
 	&platform_redwood,
 	&platform_starlte,
 	&platform_frankel,
+	&platform_gracerlte,
 	&platform_qemu_lga,
 };
 
@@ -1601,8 +1651,17 @@ __asm__ (
         /* PSTATE bits the kernel may have left set. PAN in particular is fatal:
          * UEFI maps its memory as EL0-accessible, so with PAN every data access
          * (including the exception handler's own stack push) faults. */
-        "  .inst 0xd500409f\n"          /* msr PAN, #0 */
-        "  .inst 0xd500407f\n"          /* msr UAO, #0 */
+        /* only where the core has them: on an ARMv8.0 core (the Note FE's M1s and A53s) both are UNDEFINED */
+        "  mrs x9, id_aa64mmfr1_el1\n"
+        "  ubfx x9, x9, #20, #4\n"             /* PAN */
+        "  cbz x9, 1f\n"
+        "  .inst 0xd500409f\n"                  /* msr PAN, #0 */
+        "1:\n"
+        "  mrs x9, s3_0_c0_c7_2\n"              /* ID_AA64MMFR2_EL1 */
+        "  ubfx x9, x9, #4, #4\n"              /* UAO */
+        "  cbz x9, 2f\n"
+        "  .inst 0xd500407f\n"                  /* msr UAO, #0 */
+        "2:\n"
         "  mrs x9, sctlr_el1\n"
         "  bic x9, x9, #0x1\n"
         "  bic x9, x9, #0x4\n"
@@ -1724,11 +1783,39 @@ uint64_t psci_by_hvc __attribute__((aligned(64)));
 void other_cpu_entry(void);
 void other_cpu_return_stub(void);
 
+/*
+ * Where the kernel's other cores start when the firmware keeps only the low 32 bits of CPU_ON's entry (cpu_on_low_entry:
+ * the Exynos 8890's EL3): here, below 4 GB, then on to the kernel's LowResetVectorBase (start.s: loader_stub_slot[4], its offset from the slot).
+ * The kernel is given this address as /chosen/psci-cpu-on-entry. Each core marks its arrival (cluster * 16 + core).
+ */
+uint64_t kernel_cpu_target __attribute__((aligned(64)));
+volatile uint8_t kernel_cpu_arrived[64] __attribute__((aligned(64)));
+void kernel_cpu_entry(void);
+
+__asm__ (
+        ".text\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_entry\n"
+        "kernel_cpu_entry:\n"                   /* MMU and caches are off */
+        "  mrs x9, mpidr_el1\n"
+        "  ubfx x10, x9, #8, #8\n"
+        "  and x9, x9, #0xf\n"
+        "  add x9, x9, x10, lsl #4\n"
+        "  and x9, x9, #63\n"
+        "  adrp x10, kernel_cpu_arrived\n"
+        "  add x10, x10, :lo12:kernel_cpu_arrived\n"
+        "  mov w11, #1\n"
+        "  strb w11, [x10, x9]\n"
+        "  adrp x10, kernel_cpu_target\n"
+        "  ldr x10, [x10, :lo12:kernel_cpu_target]\n"
+        "  br x10\n"
+);
+
 __asm__ (
         ".text\n"
         ".balign 64\n"
         ".globl other_cpu_entry\n"
-        "other_cpu_entry:\n"                    /* x0 = &other_cpu_start; MMU and caches are off */
+        "other_cpu_entry:\n"                    /* MMU and caches are off */
         "  msr daifset, #0xf\n"
         /* until the kernel has vectors of its own, an exception must not go nowhere */
         "  adrp x9, other_cpu_vectors\n"
@@ -1750,6 +1837,9 @@ __asm__ (
         "  add  x9, x9, :lo12:other_cpu_stage\n"
         "  mov x10, #1\n"
         "  str x10, [x9]\n"
+        /* not from x0, CPU_ON's context: the Exynos 8890's EL3 does not pass it (the M1 arrives with junk there) */
+        "  adrp x0, other_cpu_start\n"
+        "  add  x0, x0, :lo12:other_cpu_start\n"
         "  ldp x9, x10, [x0]\n"
         "  mov x0, x10\n"
         "  br x9\n"
@@ -1777,8 +1867,17 @@ __asm__ (
         ".globl other_cpu_return_stub\n"
         "other_cpu_return_stub:\n"              /* x0..x7 as for loader_return_stub */
         "  msr daifset, #0xf\n"
+        /* only where the core has them: on an ARMv8.0 core (the Note FE's M1s and A53s) both are UNDEFINED */
+        "  mrs x9, id_aa64mmfr1_el1\n"
+        "  ubfx x9, x9, #20, #4\n"             /* PAN */
+        "  cbz x9, 1f\n"
         "  .inst 0xd500409f\n"                  /* msr PAN, #0 */
+        "1:\n"
+        "  mrs x9, s3_0_c0_c7_2\n"              /* ID_AA64MMFR2_EL1 */
+        "  ubfx x9, x9, #4, #4\n"              /* UAO */
+        "  cbz x9, 2f\n"
         "  .inst 0xd500407f\n"                  /* msr UAO, #0 */
+        "2:\n"
         "  mrs x9, sctlr_el1\n"
         "  bic x9, x9, #0x1\n"
         "  bic x9, x9, #0x4\n"
@@ -3295,7 +3394,71 @@ psci_call(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
 		status = (int64_t)smc_call(function, a1, a2, NULL, NULL);
 		smc_x3 = 0;
 	}
-	return status;
+	return (int32_t)status;         /* PSCI's answers are 32-bit; Samsung's EL3 leaves x0's top half 0 (-1 reads 0xFFFFFFFF) */
+}
+
+/*
+ * The Exynos 8890 (platform_gracerlte.pmu_cpu_power): Samsung's EL3 takes CPU_ON (it records the entry point and answers
+ * 0) but does not power the core. What does, seen on the phone (the port's probe, PLAN.md Phase 0): once, the CPU part
+ * of Samsung's pwrcal_syspwr_init (S5E8890-syspwr.c: init_pmu_l2_option, init_pmu_cpu_option, init_pmu_up_scheduler;
+ * power-sequencer options only, no voltage, clock or reset), then after CPU_ON the core's CPU_CONFIGURATION[3:0] = 0xF.
+ * The core then starts at the entry CPU_ON was given, at EL1. Its PMU slot: cluster * 4 + core (M1s 0-3, A53s 4-7).
+ */
+#define PMU_CPU(slot)           (0x2000u + (slot) * 0x80u)      /* CONFIGURATION +0x0, OPTION +0x8, DURATION0 +0x10 */
+#define PMU_NONCPU(cluster)     (0x2400u + (cluster) * 0x20u)
+#define PMU_L2(cluster)         (0x2600u + (cluster) * 0x20u)
+#define PMU_UP_SCHEDULER        0x0120u
+
+static uint32_t
+pmu_rd(uint32_t off)
+{
+	return *(volatile uint32_t *)(uintptr_t)(PLAT->recovery_pmu + off);
+}
+
+static void
+pmu_wr(uint32_t off, uint32_t v)
+{
+	*(volatile uint32_t *)(uintptr_t)(PLAT->recovery_pmu + off) = v;
+}
+
+static void
+pmu_setf(uint32_t off, unsigned pos, uint32_t mask, uint32_t v)
+{
+	pmu_wr(off, (pmu_rd(off) & ~(mask << pos)) | (v << pos));
+}
+
+static void
+pmu_cpu_power_on(uint64_t mpidr)
+{
+	static int sequencer_set;
+	uint32_t slot = (uint32_t)(((mpidr >> 8) & 0xff) * 4 + (mpidr & 0xff));
+
+	if (!PLAT->pmu_cpu_power || slot > 7) {
+		return;
+	}
+	if (!sequencer_set) {
+		sequencer_set = 1;
+		for (unsigned cl = 0; cl < 2; cl++) {
+			pmu_wr(PMU_NONCPU(cl) + 0x8, (pmu_rd(PMU_NONCPU(cl) + 0x8) & ~(1u << 1)) | (1u << 0));
+			pmu_setf(PMU_NONCPU(cl) + 0x10, 8, 0xf, 3);
+			pmu_setf(PMU_NONCPU(cl) + 0x10, 4, 0xf, 3);
+			pmu_wr(PMU_L2(cl) + 0x8, (pmu_rd(PMU_L2(cl) + 0x8) & ~((1u << 17) | (1u << 4))) | (1u << 16));
+		}
+		for (unsigned s = 0; s < 8; s++) {
+			uint32_t v = pmu_rd(PMU_CPU(s) + 0x8);
+			v &= ~((1u << 31) | (1u << 30) | (1u << 27) | (1u << 26) | (1u << 25) | (1u << 24) | (1u << 20) |
+			    (1u << 17) | (1u << 15) | (1u << 12) | (1u << 9) | (1u << 5) | (1u << 4) | (1u << 2) | (1u << 1));
+			v |= (1u << 28) | (1u << 16) | (1u << 8) | (1u << 3) | (1u << 0);
+			pmu_wr(PMU_CPU(s) + 0x8, v);
+			pmu_setf(PMU_CPU(s) + 0x10, 8, 0xf, 3);
+			pmu_setf(PMU_CPU(s) + 0x10, 4, 0xf, 3);
+		}
+		pmu_wr(PMU_UP_SCHEDULER, pmu_rd(PMU_UP_SCHEDULER) | 0x3);
+	}
+	pmu_wr(PMU_CPU(slot), pmu_rd(PMU_CPU(slot)) | 0xF);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	print("core %x: powered by the PMU (slot %d, CPU_CONFIGURATION %x)\n", mpidr, (uint64_t)slot,
+	    (uint64_t)pmu_rd(PMU_CPU(slot)));
 }
 
 /*
@@ -3332,6 +3495,9 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 
 	/* the last argument arrives in that core's x0 */
 	status = psci_call(PSCI_CPU_ON, mpidr, (uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_start);
+	if (status == 0) {
+		pmu_cpu_power_on(mpidr);
+	}
 
 	started = last_pet = last_battery = last_beat_at = READ_SYSREG(CNTVCT_EL0);
 	print("core %x: the firmware answers %d to the request to start it\n", mpidr, (uint64_t)status);
@@ -4369,6 +4535,19 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			q[2] = checkpoint;
 			q[3] = slide;
 			print("return slot patched at %x, checkpoint %d\n", (uint64_t)(uintptr_t)q, checkpoint);
+			uint64_t reset = (uint64_t)(uintptr_t)q + q[4];   /* the reset vector's offset from the slot */
+			if (PLAT->cpu_on_low_entry && (reset & 0xfff) == 0 && reset >= kern_lo && reset < kern_hi) {
+				kernel_cpu_target = reset;
+				for (int i = 0; i < 64; i++) {
+					kernel_cpu_arrived[i] = 0;
+				}
+				flush_dcache((uint64_t)(uintptr_t)&kernel_cpu_target, (uint64_t)(uintptr_t)&kernel_cpu_target + 8);
+				flush_dcache((uint64_t)(uintptr_t)kernel_cpu_arrived, (uint64_t)(uintptr_t)kernel_cpu_arrived + 64);
+				print("the kernel's other cores start at %x, then its reset vector %x\n",
+				    (uint64_t)(uintptr_t)&kernel_cpu_entry, reset);
+			} else if (PLAT->cpu_on_low_entry) {
+				print("no reset vector in the kernel's slot (%x): its other cores start where it says\n", q[4]);
+			}
 			break;
 		}
 	}
@@ -4539,6 +4718,9 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop_u32(&w, "display-rotation", 0);
 	/* how the kernel is to ask the firmware for more cores (PSCI) */
 	dt_prop_str(&w, "psci-method", plat->psci_hvc ? "hvc" : "smc");
+	if (kernel_cpu_target != 0) {
+		dt_prop_u64(&w, "psci-cpu-on-entry", (uint64_t)(uintptr_t)&kernel_cpu_entry);
+	}
 	/* the time now, by the firmware's clock (the kernel has no real-time clock driver) */
 	uint64_t epoch = firmware_epoch();
 	if (epoch != 0) {
@@ -4872,6 +5054,16 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	if (block_write_requested) {
 		print("ufs: %d writes into %s, %d bytes, read back the same; %d refused\n", block_writes,
 		    PLAT->data_part != NULL ? PLAT->data_part : "darwin", block_write_bytes, block_writes_refused);
+	}
+	if (kernel_cpu_target != 0) {
+		flush_dcache((uint64_t)(uintptr_t)kernel_cpu_arrived, (uint64_t)(uintptr_t)kernel_cpu_arrived + 64);
+		print("the kernel's cores that came through kernel_cpu_entry:");
+		for (int i = 1; i < cpu_count; i++) {
+			if (kernel_cpu_arrived[(((cpu_mpidr[i] >> 8) & 0xff) * 16 + (cpu_mpidr[i] & 0xf)) & 63]) {
+				print(" %x", cpu_mpidr[i]);
+			}
+		}
+		print("\n");
 	}
 	/* ... and its other cores should all be off again: the next kernel cannot start one that is not */
 	for (int i = 1; i < cpu_count; i++) {

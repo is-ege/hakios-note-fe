@@ -32,6 +32,11 @@ int hakios_gl_present(struct hakios_gl *gl, uint32_t surface);
  * the frame as before).
  */
 int hakios_gl_pace(struct hakios_gl *gl);
+/*
+ * A surface only the GPU draws into in this process -- its locks for writing only mark it changed --: the library's
+ * driver need not clean it out of the processors' caches for those (HakiosMali's kHakiosMaliGPUDrawn).
+ */
+void hakios_gl_gpu_only(struct hakios_gl *gl, uint32_t surface);
 
 /*
  * CoreAnimation draws a layer's pixels with one of ninety "functions" (a fragment shader each); these

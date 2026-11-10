@@ -1,0 +1,46 @@
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+--- a/osfmk/arm64/psci_smp.c
++++ b/osfmk/arm64/psci_smp.c
+@@ -78,6 +78,11 @@
+ 
+ /* The firmware is called with HVC, not SMC. (start.s reads this too, at its physical address.) */
+ uint32_t psci_smp_hvc;
++/*
++ * HakiOS (patch 1515): the CPU_ON entry, when the loader gives one (/chosen/psci-cpu-on-entry): a trampoline of its own
++ * below 4 GB that goes on to LowResetVectorBase. The Exynos 8890's EL3 keeps only an entry's low 32 bits.
++ */
++static uint64_t psci_smp_entry;
+ 
+ /*
+  * Left by a core that took an exception between its first instruction and the kernel's vectors
+@@ -177,6 +182,10 @@
+ 	    size >= 3 && strncmp((const char *)prop, "hvc", 3) == 0) {
+ 		psci_smp_hvc = 1;
+ 	}
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
++	    SecureDTGetProperty(chosen, "psci-cpu-on-entry", &prop, &size) == kSuccess && size == sizeof(uint64_t)) {
++		memcpy(&psci_smp_entry, prop, sizeof(psci_smp_entry));
++	}
+ }
+ 
+ /* A processor other than the boot processor says how far it has come. */
+@@ -417,7 +426,7 @@
+ {
+ 	cpu_data_t *cdp = cpu_datap(cpu);
+ 	uint32_t phys_id = cdp->cpu_phys_id, stage;
+-	uint64_t entry = ml_static_vtop((vm_offset_t)&LowResetVectorBase);
++	uint64_t entry = psci_smp_entry ? psci_smp_entry : ml_static_vtop((vm_offset_t)&LowResetVectorBase);
+ 	uint64_t now, deadline, t0 = mach_absolute_time(), t1;
+ 	uint32_t seen = 0;
+ 	int64_t status;
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -374,6 +374,7 @@
+ 	.quad	0						// PA of the loader's return stub
+ 	.quad	0						// checkpoint number to stop at (0 = none)
+ 	.quad	0						// (physical - virtual) offset of the static kernel image
++	.quad	EXT(LowResetVectorBase) - Lloader_stub_slot	// HakiOS (patch 1515): where other cores start, from here (a loader trampoline)
+ 
+ #if defined(GENERIC_PSCI_SMP)
+ /*

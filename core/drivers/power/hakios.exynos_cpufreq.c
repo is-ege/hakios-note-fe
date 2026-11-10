@@ -33,7 +33,8 @@
  * trip at 76 (little-alert1); "hot" at 115 for both. The frequencies of each trip are in the bootloader's ECT, not in the
  * source, so this file has its own, in the same places: every second, a zone at its control point (83 BIG, 76 LITTLE)
  * or above loses one level of its cluster's ceiling, and gets one back once 5 degrees under it (the trips' hysteresis);
- * at 96 or above the cluster goes to its lowest level at once (the slowest at or above min-freq: never under what
+ * (or, where the glue has Samsung's own table of ceilings by temperature, that table, each kept until 5 degrees under
+ * its temperature); at 96 or above the cluster goes to its lowest level at once (the slowest at or above min-freq: never under what
  * Samsung's kernel uses). The temperatures are the TMU driver's, asked of it directly (hakios_exynos_tmu_zone_mc(): its
  * last reading of the BIG and LITTLE zones, with tmu=1 or more). They were read through kern.hakios.temp.big_mc and
  * little_mc (kernel_sysctlbyname) at first, which on the phone gave nothing ("temp big - lit - C" all through main-1102
@@ -85,7 +86,14 @@
  * read), with the touch and frame boosts, the 60% target and the five down windows (kernel PR 158): the S9's default,
  * cpufreq_gov=1.
  *
+ * The SoC's part -- each cluster's levels and limits, the limit by cores online, how a rate is set and read back -- is a
+ * glue's (hakios.cpufreq_glue.h; cpufreq_soc=): hakios.exynos9810_cpufreq.c, which all of the above describes, and the
+ * Note FE's devices/gracerlte/soc/drivers/core/hakios.exynos8890_cpu.c (the big cluster only, set through the CMU and
+ * the PMIC). A cluster the glue gives no limits for is not governed.
+ *
  * Boot-args:
+ *   cpufreq_soc=NAME         the SoC's glue, exynos9810 (the Galaxy S9's) or exynos8890 (the Note FE's); without it the
+ *                            one this kernel has, the 9810's first
  *   cpufreq_gov=1            run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
  *   cpufreq_gov_ms=<ms>      the load window (20 to 200; 40)
  *   cpufreq_gov_log=<s>      a summary line this often (0: none; 1)
@@ -117,11 +125,13 @@
 #include <mach/mach_types.h>
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
-#include <sys/hakios.exynos_acpm.h>
+#include <sys/hakios.exynos_acpm.h>     /* this file's own declarations */
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
 #include <sys/errno.h>
+
+#include "hakios.cpufreq_glue.h"
 
 extern void loader_log_line(const char *line);
 extern bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
@@ -142,8 +152,7 @@ extern kern_return_t thread_wakeup_prim(event_t event, boolean_t one_thread, wai
 #define NOT_READ_MC     (-273000)
 #define HOT_CUT_MC      96000   /* BIG's hotplug_out_threshold: the cluster to its lowest level */
 #define HYSTERESIS_MC   5000
-#define NO_TEMP_BIG_MAX 1794000 /* without temperatures, the M3s no faster than this */
-#define ANSWERS_LOGGED  8       /* changes whose APM answer is logged, per cluster */
+#define ANSWERS_LOGGED  8       /* changes whose answer is logged, per cluster */
 #define SPIN_LOOPS      8192    /* measure_mhz(): 32 additions each, 262144 cycles (0.1 to 0.6 ms) */
 
 static int say(const char *format, ...) __printflike(1, 2);
@@ -165,14 +174,12 @@ static struct cluster {
 	const char *name;               /* "lit", "big" */
 	const char *zone;               /* the TMU's sysctl (logged once, beside the direct reading) */
 	unsigned tmu_zone;              /* the TMU driver's zone: 0 BIG, 1 LITTLE */
-	uint32_t index;                 /* the ACPM DVFS domain */
+	uint32_t index;                 /* the glue's domain: 0 lit, 1 big */
 	uint32_t affinity;              /* MPIDR [15:8] of its cores */
 	int32_t control_mc;             /* where Samsung starts to cool it */
-	uint32_t dt_min, dt_max;        /* the device tree's limits (see the head) */
-	const uint32_t *dt_levels;
-	uint32_t n_dt_levels;
+	uint32_t dt_min, dt_max;        /* Samsung's limits (see the head) */
 	uint32_t levels[LEVELS_MOST];   /* the fastest first */
-	uint32_t n;
+	uint32_t n;                     /* 0: not governed */
 	uint32_t floor, ceiling;        /* kHz: boot-args within the device tree's limits */
 	uint32_t thermal;               /* the thermal ceiling, a level index (0: none) */
 	uint32_t cur;                   /* kHz, as read back, or as asked when the APM says 0 */
@@ -187,13 +194,7 @@ static struct cluster {
 	uint32_t boost_floor;           /* the last boost_floor() (kHz; 0: no boost on) */
 } clusters[2];
 
-static const uint32_t lit_dt[] = {
-	1950000, 1794000, 1690000, 1456000, 1248000, 1053000, 949000, 832000, 715000, 598000, 455000,
-};
-static const uint32_t big_dt[] = {
-	2886000, 2860000, 2704000, 2652000, 2496000, 2314000, 2106000, 2002000, 1924000, 1794000, 1690000, 1586000, 1469000,
-	1261000, 1170000, 1066000, 962000, 858000, 741000, 650000, 598000,
-};
+static const struct hakios_cpufreq_glue *glue;
 
 static uint32_t window_ms = 40, log_seconds = 1, target_load = TARGET_LOAD, down_windows = DOWN_WINDOWS;
 
@@ -271,11 +272,11 @@ frame_big_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused
 		nanoseconds_to_absolutetime((uint64_t)frame_ms * NSEC_PER_MSEC, &frame_span);
 	}
 	clusters[1].frame_khz = (uint32_t)khz;
-	say("cpufreq_gov: the M3s' frame boost now %d kHz (kern.hakios.gov_frame_big)\n", khz);
+	say("cpufreq_gov: big's frame boost now %d kHz (kern.hakios.gov_frame_big)\n", khz);
 	return 0;
 }
 SYSCTL_PROC(_kern_hakios, OID_AUTO, gov_frame_big, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, NULL, 0,
-    frame_big_sysctl, "I", "the M3s' floor while frames come, kHz (gov_frame_big=; 0: none)");
+    frame_big_sysctl, "I", "the big cores' floor while frames come, kHz (gov_frame_big=; 0: none)");
 
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
@@ -284,13 +285,6 @@ static bool
 ever_idle_cpu(unsigned int i)
 {
 	return i < MAX_CPUS && ever_idle[i];
-}
-
-/* the M3s' limit for this many online (exynos-hotplug_governor.c get_hpgov_maxfreq with the device tree's values) */
-static uint32_t
-big_online_limit(uint32_t online)
-{
-	return online <= 2 ? 2314000 : 1794000;
 }
 
 /* the slowest level at or above khz (the fastest when none is) */
@@ -323,10 +317,7 @@ ceiling_now(struct cluster *c)
 	uint32_t max = c->ceiling;
 
 	if (c == &clusters[1]) {
-		max = MIN(max, big_online_limit(c->online));
-		if (c->temp_mc == NOT_READ_MC) {
-			max = MIN(max, NO_TEMP_BIG_MAX);
-		}
+		max = MIN(max, glue->big_limit(c->online, c->temp_mc != NOT_READ_MC));
 	}
 	if (c->thermal > 0) {
 		max = MIN(max, c->levels[MIN(c->thermal, c->n - 1)]);
@@ -385,26 +376,12 @@ boost_due(uint64_t now)
 	return false;
 }
 
-/*
- * One DVFS request, as hakios_acpm_dvfs_set() sends it (domain, kHz, FREQ_REQ 0, 0), with the APM's answer kept: its four
- * words come back in place of the request's.
- */
-static int
-dvfs_request(uint32_t index, uint32_t khz, uint32_t answer[4])
-{
-	answer[0] = index;
-	answer[1] = khz;
-	answer[2] = 0;
-	answer[3] = 0;
-	return hakios_acpm_request(HAKIOS_ACPM_CH_DVFS, answer);
-}
-
-/* the rate the APM says (FREQ_GET); 0 is "not said": the rate asked for stands */
+/* the rate the glue says; 0 is "not said": the rate asked for stands */
 static void
 read_back(struct cluster *c, uint32_t asked)
 {
 	uint32_t got = 0;
-	int e = hakios_acpm_dvfs_get(c->index, &got);
+	int e = glue->get(c->index, &got);
 
 	if (e == 0 && got != 0) {
 		c->cur = got;
@@ -412,8 +389,8 @@ read_back(struct cluster *c, uint32_t asked)
 		return;
 	}
 	if (!c->asked) {
-		say("cpufreq_gov: %s: the APM answers FREQ_GET with %u kHz (%d): the rate asked for, %u kHz, is taken as the "
-		    "rate (and measured once a log line)\n", c->name, got, e, asked);
+		say("cpufreq_gov: %s: %s says its rate is %u kHz (%d): the rate asked for, %u kHz, is taken as the "
+		    "rate (and measured once a log line)\n", c->name, glue->setter, got, e, asked);
 	}
 	c->cur = asked;
 	c->asked = true;
@@ -423,18 +400,18 @@ static void
 set_rate(struct cluster *c, uint32_t khz, uint32_t max)
 {
 	uint32_t answer[4];
-	int e = dvfs_request(c->index, khz, answer);
+	int e = glue->set(c->index, khz, answer);
 
 	if (e != 0) {
 		if (c->errors++ < 5) {
-			say("cpufreq_gov: %s: asked %u kHz: the APM did not answer (%d); the rate stays %u kHz\n", c->name, khz, e,
-			    c->cur);
+			say("cpufreq_gov: %s: asked %u kHz: %s did not do it (%d); the rate stays %u kHz\n", c->name, khz,
+			    glue->setter, e, c->cur);
 		}
 		return;
 	}
 	if (c->changes < ANSWERS_LOGGED) {
-		say("cpufreq_gov: %s: %u -> %u kHz asked; the APM answered %08x %08x %08x %08x\n", c->name, c->cur, khz,
-		    answer[0], answer[1], answer[2], answer[3]);
+		say("cpufreq_gov: %s: %u -> %u kHz asked; %s answered %08x %08x %08x %08x\n", c->name, c->cur, khz,
+		    glue->setter, answer[0], answer[1], answer[2], answer[3]);
 	}
 	c->changes++;
 	read_back(c, khz);
@@ -442,9 +419,9 @@ set_rate(struct cluster *c, uint32_t khz, uint32_t max)
 		uint32_t lower = level_at_most(c, khz);
 
 		lower = lower + 1 < c->n ? lower + 1 : lower;
-		say("cpufreq_gov: %s: asked %u kHz, the APM says %u, above %u: asking %u\n", c->name, khz, c->cur, max,
+		say("cpufreq_gov: %s: asked %u kHz, %s says %u, above %u: asking %u\n", c->name, khz, glue->setter, c->cur, max,
 		    c->levels[lower]);
-		if (dvfs_request(c->index, c->levels[lower], answer) == 0) {
+		if (glue->set(c->index, c->levels[lower], answer) == 0) {
 			read_back(c, c->levels[lower]);
 		}
 	}
@@ -529,6 +506,9 @@ decide(struct cluster *c, uint64_t now)
 {
 	uint32_t max = ceiling_now(c), want, target;
 
+	if (c->n == 0) {
+		return;
+	}
 	c->load_sum += c->load;
 	c->windows++;
 	c->boost_floor = boost_floor(c, now);
@@ -579,11 +559,25 @@ cool(struct cluster *c)
 {
 	uint32_t before = c->thermal;
 
+	if (c->n == 0) {
+		return;
+	}
 	c->temp_mc = read_temp(c);
 	if (c->temp_mc == NOT_READ_MC) {
 		c->thermal = 0;
 	} else if (c->temp_mc >= HOT_CUT_MC) {
 		c->thermal = c->lowest;
+	} else if (glue->domain[c->index].n_clips != 0) {
+		/* the glue's table: the hottest clip reached, kept until HYSTERESIS_MC under its temperature */
+		const struct hakios_cpufreq_domain *d = &glue->domain[c->index];
+		uint32_t held = c->thermal ? c->levels[c->thermal] : UINT32_MAX;
+
+		c->thermal = 0;
+		for (uint32_t i = 0; i < d->n_clips; i++) {
+			if (c->temp_mc >= d->clips[i].mc || (held <= d->clips[i].khz && c->temp_mc >= d->clips[i].mc - HYSTERESIS_MC)) {
+				c->thermal = level_at_most(c, d->clips[i].khz);
+			}
+		}
 	} else if (c->temp_mc >= c->control_mc) {
 		/* one level under where it runs now (or under the last thermal ceiling) */
 		uint32_t from = c->thermal ? c->thermal : level_at_most(c, MIN(c->cur, ceiling_now(c)));
@@ -612,32 +606,39 @@ temp_text(char *out, size_t size, int32_t mc)
 static void
 summary(uint64_t seconds)
 {
-	struct cluster *l = &clusters[0], *b = &clusters[1];
-	char tb[16], tl[16], ml[16], mb[16];
-	uint32_t touches, frames, raises;
+	char line[320] = "", temps[48] = "", t[16], m[16];
+	uint32_t touches, frames, raises, changes = 0;
 	uint64_t now;
 	bool touched, framed;
+	int at = 0;
 
-	l->measured = measure_mhz(l);
-	b->measured = measure_mhz(b);
-	temp_text(tb, sizeof(tb), b->temp_mc);
-	temp_text(tl, sizeof(tl), l->temp_mc);
-	snprintf(ml, sizeof(ml), l->measured ? "%u" : "?", l->measured);
-	snprintf(mb, sizeof(mb), b->measured ? "%u" : "?", b->measured);
+	for (int i = 0; i < 2; i++) {
+		struct cluster *c = &clusters[i], *z = &clusters[1 - i];        /* the temperatures big first, as ever */
+
+		if (z->n != 0) {
+			temp_text(t, sizeof(t), z->temp_mc);
+			snprintf(temps + strlen(temps), sizeof(temps) - strlen(temps), " %s %s", z->name, t);
+		}
+		if (c->n == 0) {
+			continue;
+		}
+		c->measured = measure_mhz(c);
+		snprintf(m, sizeof(m), c->measured ? "%u" : "?", c->measured);
+		at += snprintf(line + at, sizeof(line) - at, "%s %u MHz%s load %u%% (avg %u%%, %u online, %u max, measured %s) | ",
+		    c->name, c->cur / 1000, c->asked ? " asked" : "", c->load, c->windows ? c->load_sum / c->windows : 0, c->online,
+		    ceiling_now(c) / 1000, m);
+		changes += c->changes;
+		c->load_sum = c->windows = 0;
+	}
 	now = mach_absolute_time();
 	touched = boost_on(__atomic_load_n(&touch_last, __ATOMIC_ACQUIRE), boost_span, now);
 	framed = boost_on(__atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), frame_span, now);
 	touches = __atomic_exchange_n(&touch_count, 0, __ATOMIC_RELAXED);
 	frames = __atomic_exchange_n(&frame_count, 0, __ATOMIC_RELAXED);
 	raises = __atomic_exchange_n(&boost_raises, 0, __ATOMIC_RELAXED);
-	say("cpufreq_gov: %llu s: lit %u MHz%s load %u%% (avg %u%%, %u online, %u max, measured %s) | big %u MHz%s load %u%% "
-	    "(avg %u%%, %u online, %u max, measured %s) | temp big %s lit %s C | %u changes | boost: %u touch, %u frames, %u "
-	    "raised, %s\n", seconds, l->cur / 1000,
-	    l->asked ? " asked" : "", l->load, l->windows ? l->load_sum / l->windows : 0, l->online, ceiling_now(l) / 1000, ml,
-	    b->cur / 1000, b->asked ? " asked" : "", b->load, b->windows ? b->load_sum / b->windows : 0, b->online,
-	    ceiling_now(b) / 1000, mb, tb, tl, l->changes + b->changes, touches, frames, raises,
+	say("cpufreq_gov: %llu s: %stemp%s C | %u changes | boost: %u touch, %u frames, %u raised, %s\n", seconds, line, temps,
+	    changes, touches, frames, raises,
 	    touched && framed ? "touch and frames on" : touched ? "touch on" : framed ? "frames on" : "off");
-	l->load_sum = l->windows = b->load_sum = b->windows = 0;
 }
 
 static void
@@ -689,29 +690,30 @@ gov_thread(void *arg __unused, wait_result_t wr __unused)
 }
 
 static void
-cluster_setup(struct cluster *c, uint32_t asked_max, uint32_t asked_min, uint32_t max_default, uint32_t floor_default)
+cluster_setup(struct cluster *c, uint32_t asked_max, uint32_t asked_min)
 {
+	const struct hakios_cpufreq_domain *d = &glue->domain[c->index];
 	uint32_t uv[LEVELS_MOST];
 	char line[256];
 	int at;
 
-	c->n = hakios_acpm_dvfs_table(c->index, c->levels, uv, LEVELS_MOST, say);
+	c->n = glue->table != NULL ? glue->table(c->index, c->levels, uv, LEVELS_MOST, say) : 0;
 	if (c->n > 0) {
-		at = snprintf(line, sizeof(line), "cpufreq_gov: %s: the APM's table (DVFS %u), kHz/uV:", c->name, c->index);
+		at = snprintf(line, sizeof(line), "cpufreq_gov: %s: %s's table, kHz/uV:", c->name, glue->setter);
 		for (uint32_t l = 0; l < c->n && at < (int)sizeof(line) - 20; l++) {
 			at += snprintf(line + at, sizeof(line) - at, " %u/%u", c->levels[l], uv[l]);
 		}
 		say("%s\n", line);
 	} else {
-		for (uint32_t l = 0; l < c->n_dt_levels; l++) {
-			c->levels[l] = c->dt_levels[l];
+		for (uint32_t l = 0; l < d->n_levels && l < LEVELS_MOST; l++) {
+			c->levels[l] = d->levels[l];
 		}
-		c->n = c->n_dt_levels;
-		say("cpufreq_gov: %s: the APM's table not read: the device tree's %u levels, %u to %u kHz\n", c->name, c->n,
-		    c->levels[c->n - 1], c->levels[0]);
+		c->n = MIN(d->n_levels, LEVELS_MOST);
+		say("cpufreq_gov: %s: the %s glue's %u levels, %u to %u kHz\n", c->name, glue->name, c->n, c->levels[c->n - 1],
+		    c->levels[0]);
 	}
-	c->ceiling = MIN(asked_max ? asked_max : max_default, c->dt_max);
-	c->floor = MAX(asked_min ? asked_min : floor_default, c->dt_min);
+	c->ceiling = MIN(asked_max ? asked_max : d->max_default, c->dt_max);
+	c->floor = MAX(asked_min ? asked_min : d->floor_default, c->dt_min);
 	c->ceiling = c->levels[level_at_most(c, c->ceiling)];
 	c->lowest = level_at_least(c, c->dt_min);
 	c->floor = MIN(c->levels[level_at_least(c, c->floor)], c->ceiling);
@@ -722,12 +724,25 @@ bool
 hakios_exynos_cpufreq_gov_start(void)
 {
 	uint32_t on = 0, value = 0, lit_max = 0, lit_min = 0, big_max = 0, big_min = 0;
-	uint32_t touch_big = 1469000, touch_lit = 1690000, frame_big = 1261000;
+	uint32_t touch_big, touch_lit, frame_big;
+	char soc[16] = "";
 	thread_t thread;
 
 	if (!PE_parse_boot_argn("cpufreq_gov", &on, sizeof(on)) || on == 0) {
 		return false;
 	}
+	(void)PE_parse_boot_argn("cpufreq_soc", soc, sizeof(soc));
+	glue = strcmp(soc, "exynos8890") == 0 ? NULL : hakios_cpufreq_glue_exynos9810();
+	if (glue == NULL && strcmp(soc, "exynos9810") != 0) {
+		glue = hakios_cpufreq_glue_exynos8890();
+	}
+	if (glue == NULL) {
+		say("cpufreq_gov: no glue for cpufreq_soc=%s in this kernel (exynos9810, exynos8890): not started\n", soc);
+		return false;
+	}
+	touch_lit = glue->domain[0].touch_khz;
+	touch_big = glue->domain[1].touch_khz;
+	frame_big = glue->domain[1].frame_khz;
 	if (PE_parse_boot_argn("cpufreq_gov_ms", &value, sizeof(value)) && value >= 20 && value <= 200) {
 		window_ms = value;
 	}
@@ -765,29 +780,35 @@ hakios_exynos_cpufreq_gov_start(void)
 	}
 	nanoseconds_to_absolutetime((uint64_t)boost_ms * NSEC_PER_MSEC, &boost_span);
 	nanoseconds_to_absolutetime((uint64_t)frame_ms * NSEC_PER_MSEC, &frame_span);
-	if (!hakios_acpm_init(say)) {
-		say("cpufreq_gov: no ACPM: not started (and the fixed rates not set either)\n");
+	if (!glue->init(say)) {
+		say("cpufreq_gov: the %s glue cannot set a rate: not started (and the fixed rates not set either)\n", glue->name);
 		return true;
 	}
-	clusters[0] = (struct cluster){ .name = "lit", .zone = "kern.hakios.temp.little_mc", .tmu_zone = 1, .index = 2, .affinity = 0,
-		                        .control_mc = 76000, .dt_min = 455000, .dt_max = 1950000, .dt_levels = lit_dt,
-		                        .n_dt_levels = sizeof(lit_dt) / sizeof(lit_dt[0]) };
-	clusters[1] = (struct cluster){ .name = "big", .zone = "kern.hakios.temp.big_mc", .tmu_zone = 0, .index = 3, .affinity = 1,
-		                        .control_mc = 83000, .dt_min = 650000, .dt_max = 2314000, .dt_levels = big_dt,
-		                        .n_dt_levels = sizeof(big_dt) / sizeof(big_dt[0]) };
-	cluster_setup(&clusters[0], lit_max, lit_min, 1794000, 1053000);
-	cluster_setup(&clusters[1], big_max, big_min, 1794000, 650000);
-	clusters[0].touch_khz = touch_lit;
-	clusters[1].touch_khz = touch_big;
-	clusters[1].frame_khz = frame_big;
+	clusters[0] = (struct cluster){ .name = "lit", .zone = "kern.hakios.temp.little_mc", .tmu_zone = 1 };
+	clusters[1] = (struct cluster){ .name = "big", .zone = "kern.hakios.temp.big_mc", .tmu_zone = 0 };
 	for (int i = 0; i < 2; i++) {
+		const struct hakios_cpufreq_domain *d = &glue->domain[i];
 		struct cluster *c = &clusters[i];
 		uint32_t found = 0;
-		int e = hakios_acpm_dvfs_get(c->index, &found);
+		int e;
 
+		if (d->max == 0) {
+			say("cpufreq_gov: %s: not governed by the %s glue\n", c->name, glue->name);
+			c->affinity = ~0u;      /* no core's */
+			continue;
+		}
+		c->index = (uint32_t)i;
+		c->affinity = d->affinity;
+		c->control_mc = d->control_mc;
+		c->dt_min = d->min;
+		c->dt_max = d->max;
+		cluster_setup(c, i ? big_max : lit_max, i ? big_min : lit_min);
+		c->touch_khz = i ? touch_big : touch_lit;
+		c->frame_khz = i ? frame_big : 0;
+		e = glue->get(c->index, &found);
 		c->cur = e == 0 ? found : 0;
-		say("cpufreq_gov: %s (DVFS %u): %u to %u kHz, now %u kHz (%d)%s\n", c->name, c->index, c->floor, c->ceiling,
-		    c->cur, e, i == 1 ? "; and by M3s online: 1-2 2314000, 3-4 1794000; 1794000 without temperatures" : "");
+		say("cpufreq_gov: %s: %u to %u kHz, now %u kHz (%d)%s\n", c->name, c->floor, c->ceiling, c->cur, e,
+		    i == 1 ? glue->big_limit_text : "");
 		if (c->cur == 0) {
 			/* (not said: the ceiling is asked for, and from then on the rate is the one asked for) */
 			set_rate(c, c->levels[level_at_most(c, c->ceiling)], c->ceiling);

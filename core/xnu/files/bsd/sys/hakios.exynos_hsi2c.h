@@ -13,7 +13,7 @@
 struct hakios_hsi2c {
 	const char *name;               /* for the log */
 	uint64_t regs_pa;               /* the HSI2C */
-	uint64_t usi_mode_pa;           /* the USI's mode word in its system register block: 4 makes it an I2C */
+	uint64_t usi_mode_pa;           /* the USI's mode word in its system register block: 4 makes it an I2C; 0: no USI (8890) */
 	uint64_t cmu_pa;                /* the CMU block its clocks are in, and in it: */
 	uint32_t cmu_size;
 	uint32_t gates[4], ngates;      /*   gates forced on (bit 20 manual, bit 21 on) */
@@ -23,6 +23,7 @@ struct hakios_hsi2c {
 	uint32_t pins_mask, pins_want;  /*   ... and their two nibbles: function 2, I2C */
 	uint32_t ipclk_mhz;             /* the HSI2C's input clock (both other drivers assume 200) */
 	uint32_t bus_hz;
+	bool timing_counts;             /* the TIMING registers hold counts of the divided clock (the 8890's), not masks */
 	/* the bus's own */
 	vm_offset_t regs, usi, cmu, pins;
 	uint64_t transfers, errors;

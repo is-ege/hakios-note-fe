@@ -53,6 +53,9 @@ hakios_exynos_dvfs_start(void)
 /* (hakios.exynos_poweroff.c asks for the APM's stop with halt_off=2: no ACPM, nothing to stop) */
 bool hakios_acpm_init(__unused int (*say)(const char *, ...)) { return false; }
 int hakios_acpm_stop(void) { return ENXIO; }
+/* (hakios.s6sy761.c cycles the S9's touch supplies through it; never reached when acpm_init says no) */
+int hakios_acpm_pmic_read(__unused uint32_t type, __unused uint32_t reg, __unused uint8_t *value) { return ENXIO; }
+int hakios_acpm_pmic_update(__unused uint32_t type, __unused uint32_t reg, __unused uint8_t value, __unused uint8_t mask) { return ENXIO; }
 #endif
 
 #ifndef HAKIOS_S2MPS18_RTC
@@ -77,6 +80,28 @@ void hakios_exynos_cpufreq_touch(void);
 void hakios_exynos_cpufreq_touch(void) {}
 void hakios_exynos_cpufreq_frame(void);
 void hakios_exynos_cpufreq_frame(void) {}
+#endif
+
+#ifndef HAKIOS_EXYNOS9810_CPUFREQ
+struct hakios_cpufreq_glue;
+const struct hakios_cpufreq_glue *hakios_cpufreq_glue_exynos9810(void);
+const struct hakios_cpufreq_glue *hakios_cpufreq_glue_exynos9810(void) { return NULL; }       /* cpufreq_gov= then says so */
+#endif
+#ifndef HAKIOS_EXYNOS8890_CPU
+struct hakios_cpufreq_glue;
+const struct hakios_cpufreq_glue *hakios_cpufreq_glue_exynos8890(void);
+const struct hakios_cpufreq_glue *hakios_cpufreq_glue_exynos8890(void) { return NULL; }
+#endif
+
+#ifndef HAKIOS_EXYNOS9810_TMU
+struct hakios_tmu_glue;
+const struct hakios_tmu_glue *hakios_tmu_glue_exynos9810(void);
+const struct hakios_tmu_glue *hakios_tmu_glue_exynos9810(void) { return NULL; }       /* tmu= then says there is no glue */
+#endif
+#ifndef HAKIOS_EXYNOS8890_TMU
+struct hakios_tmu_glue;
+const struct hakios_tmu_glue *hakios_tmu_glue_exynos8890(void);
+const struct hakios_tmu_glue *hakios_tmu_glue_exynos8890(void) { return NULL; }
 #endif
 
 #ifndef HAKIOS_EXYNOS_TMU
@@ -194,7 +219,7 @@ bool hakios_s6e3ha8_blank(__unused int (*say)(const char *, ...)) { return false
 #ifndef HAKIOS_EXYNOS_POWEROFF
 void hakios_exynos_halt_off(__unused boolean_t reboot) {}  /* a halt hands the phone to the loader, as it always did */
 #endif
-#ifndef HAKIOS_EXYNOS_DPU
+#if !defined(HAKIOS_EXYNOS_DPU) && !defined(HAKIOS_EXYNOS8890_DECON)
 #include <sys/hakios.viewport.h>
 int hakios_scanout_viewport(__unused struct hakios_viewport *v, __unused uint32_t *w, __unused uint32_t *h) { return 0; }
 /* the display's own scan-out (MiniIOMobileFramebuffer.cpp, fb_flip/fb_dpp/fps_log): none, frames go into the boot framebuffer */
@@ -235,10 +260,45 @@ int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
 /* before CPU_ON (psci_smp.c, patch 1508): go ahead, nothing to prepare */
 int hakios_psci_cpu_on_prepare(__unused int cpu, __unused uint32_t mpidr) { return 0; }
 #endif
+#ifndef HAKIOS_EXYNOS8890_CPU
+void hakios_psci_cpu_on_started(int cpu, uint32_t mpidr);
+/* after a granted CPU_ON (psci_smp.c, patch 1513): the firmware has started the core */
+void hakios_psci_cpu_on_started(__unused int cpu, __unused uint32_t mpidr) {}
+void hakios_exynos8890_cpu_init(void);
+/* (hakios.input.c, at start: the big cluster's rate, cpufreq_big=) */
+void hakios_exynos8890_cpu_init(void) {}
+#endif
+#ifndef HAKIOS_S2MPS16
+bool hakios_s2mps16_touch_power(int (*say)(const char *, ...));
+/* the Note FE's touch supplies (hakios.s6sy761.c, its gracerlte board): no PMIC driver, no power */
+bool hakios_s2mps16_touch_power(__unused int (*say)(const char *, ...)) { return false; }
+bool hakios_s2mps16_g3d_supply(int (*say)(const char *, ...), uint8_t *b6ctrl3);
+/* the Note FE's GPU supplies, read (hakios.exynos8890_g3d.c): no PMIC driver, nothing read */
+bool hakios_s2mps16_g3d_supply(__unused int (*say)(const char *, ...), __unused uint8_t *b6ctrl3) { return false; }
+bool hakios_s2mps16_buck_volt(int (*say)(const char *, ...), unsigned buck, uint8_t from, uint8_t to);
+/* the Note FE's big-cluster and GPU supplies (hakios.exynos8890_cpu.c, _g3d.c): no PMIC driver, the rates stay */
+bool hakios_s2mps16_buck_volt(__unused int (*say)(const char *, ...), __unused unsigned buck, __unused uint8_t from,
+    __unused uint8_t to) { return false; }
+#endif
 #ifndef HAKIOS_EXYNOS_USB
 struct hakios_usb_glue;
 const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void);
 const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void) { return NULL; }     /* usb_gadget= then says there is no glue */
+#endif
+#ifndef HAKIOS_EXYNOS8890_USB
+struct hakios_usb_glue;
+const struct hakios_usb_glue *hakios_usb_glue_exynos8890(void);
+const struct hakios_usb_glue *hakios_usb_glue_exynos8890(void) { return NULL; }
+#endif
+#ifndef HAKIOS_EXYNOS9810_G3D
+struct hakios_mali_glue;
+const struct hakios_mali_glue *hakios_mali_glue_exynos9810(void);
+const struct hakios_mali_glue *hakios_mali_glue_exynos9810(void) { return NULL; }     /* mali= then says there is no glue */
+#endif
+#ifndef HAKIOS_EXYNOS8890_G3D
+struct hakios_mali_glue;
+const struct hakios_mali_glue *hakios_mali_glue_exynos8890(void);
+const struct hakios_mali_glue *hakios_mali_glue_exynos8890(void) { return NULL; }
 #endif
 
 #ifndef HAKIOS_UFS

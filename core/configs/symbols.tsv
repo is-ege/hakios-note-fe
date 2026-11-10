@@ -132,6 +132,7 @@ CPUFREQ_GOV_LIT_MAX	arg	cpufreq_gov_lit_max	User space	k	hakios.exynos_cpufreq.c
 CPUFREQ_GOV_LIT_MIN	arg	cpufreq_gov_lit_min	User space	k	hakios.exynos_cpufreq.c	
 CPUFREQ_GOV_LOG	arg	cpufreq_gov_log	User space	k	hakios.exynos_cpufreq.c	a summary line this often (0: none; 1)
 CPUFREQ_GOV_MS	arg	cpufreq_gov_ms	User space	k	hakios.exynos_cpufreq.c	the load window (20 to 200; 40)
+CPUFREQ_SOC	arg	cpufreq_soc	User space	k	hakios.exynos_cpufreq.c	
 CPULOAD	arg	cpuload	CPU, memory and boot	k	hakios.cpufreq.c	every MS milliseconds, how busy each of our cores was meanwhile, in percent, to the loader's log (tools/frames.py shows it per gesture)
 CPUMASK	arg	cpumask	Loader	l	loader.c	
 CS47L93	arg	cs47l93	Audio and battery	k	hakios.cs47l93.c	the first N steps (1 looks, 2 powers the codec and reads its ID, 6 makes the microphone ready)
@@ -147,17 +148,21 @@ DISPLAY_PROBE	arg	display_probe	GPU and display	k	hakios.adreno.c	before any ste
 EARLY_LOG	arg	early_log	User space	k	1503-early-log-and-panic.patch	
 ESSLOG	arg	esslog	User space	k	1507-esslog-exynos-snapshot.patch,1509-m3-diag-and-pan-off.patch	
 EXYNOS_KEYS	arg	exynos_keys	Touch and buttons	k	hakios.exynos_keys.c	
+EXYNOS_KEYS_BOARD	arg	exynos_keys_board	Touch and buttons	k	hakios.exynos_keys.c	the board's pins (boards[]: starlte, gracerlte)
+FB_ASPECT	arg	fb_aspect	Touch and buttons	k	hakios.exynos_dpu.c,hakios.s6sy761.c	
 FB_BEAT	arg	fb_beat	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_CA_HZ	arg	fb_ca_hz	GPU and display	k	MiniIOMobileFramebuffer.cpp	the refresh rate told to CoreAnimation (IOMFBDisplayRefresh) when it is not to be fb_hz's
+FB_CPU	arg	fb_cpu	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_DIFF	arg	fb_diff	GPU and display	k	MiniIOMobileFramebuffer.cpp	which pixels of the panel each frame changed (it costs: the panel's memory is slow to read)
-FB_DPP	arg	fb_dpp	GPU and display	k	MiniIOMobileFramebuffer.cpp	three buffers of the display's size (the iPhone's 1125 x 2436): a frame is copied into one, not scaled
+FB_DPP	arg	fb_dpp	GPU and display	k	MiniIOMobileFramebuffer.cpp,hakios.s6sy761.c	three buffers of the display's size (the iPhone's 1125 x 2436): a frame is copied into one, not scaled
 FB_FILTER	arg	fb_filter	GPU and display	k	MiniIOMobileFramebuffer.cpp	the picture is scaled to the panel nearest neighbour, as it once was
 FB_FLIP	arg	fb_flip	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_HZ	arg	fb_hz	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_MEASURE	arg	fb_measure	GPU and display	k	MiniIOMobileFramebuffer.cpp	how often the panel is really refreshed
+FB_NATIVEUI	arg	fb_nativeui	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_PRI	arg	fb_pri	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_QUEUE	arg	fb_queue	GPU and display	k	MiniIOMobileFramebuffer.cpp	
-FB_RT	arg	fb_rt	GPU and display	k	MiniIOMobileFramebuffer.cpp	the thread handing the swaps over made real-time, once for each such thread: a period of a refresh, fb_rt_us
+FB_RT	arg	fb_rt	GPU and display	k	MiniIOMobileFramebuffer.cpp	the thread handing swaps over made real-time, once per such thread: fb_rt_us of processor time per refresh, preemptible
 FB_RT_US	arg	fb_rt_us	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_SWAPWAIT	arg	fb_swapwait	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_TCOAL	arg	fb_tcoal	GPU and display	k	MiniIOMobileFramebuffer.cpp	the kernel's timer coalescing left on
@@ -180,12 +185,14 @@ GLERRORS	arg	glerrors	GPU and display	u	eagl.c	ask the library for an error afte
 GLFETCH	arg	glfetch	GPU and display	u	eagl.c	
 GLFRAMES	arg	glframes	GPU and display	u	eagl.c	
 GLGROUP	arg	glgroup	GPU and display	u	eagl.c	
+GLHASH	arg	glhash	GPU and display	u	eagl.c	
 GLNO	arg	glno	User space	u	inject.c	
 GLNUMBERS	arg	glnumbers	GPU and display	u	eagl.c	
 GLPACE	arg	glpace	GPU and display	u	eagl.c	
 GLPLAIN	arg	glplain	GPU and display	u	eagl.c	leave such draws as they are; 2: also those without a texture; 3: the two with a colour matrix drawn plainly too
 GLPRECISION	arg	glprecision	GPU and display	u	eagl.c	as the shaders say.
 GLPROF	arg	glprof	GPU and display	u	eagl.c	
+GLPROF_WAIT	arg	glprof_wait	GPU and display	u	eagl.c	the looks that find it waiting inside a frame instead (its stack is where it waits from)
 GLSB3	arg	glsb3	User space	u	inject.c	
 GLSHADERS	arg	glshaders	GPU and display	u	eagl.c	
 GLSHOW	arg	glshow	GPU and display	u	eagl.c	the first texture of that size there is (names are handed out afresh every run)
@@ -239,16 +246,20 @@ M3_IDS	arg	m3_ids	User space	k	1509-m3-diag-and-pan-off.patch
 M3_PREP	arg	m3_prep	User space	k	1510-isa-floor.patch,1511-m3-user-cache-pou.patch,hakios.exynos_m3.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
 MALI	arg	mali	GPU and display	k	hakios.mali.c	the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
-MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
+MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.exynos9810_g3d.c	the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
+MALI_CACHE_PROFILE	arg	mali_cache_profile	GPU and display	k	hakios.mali.cpp	
+MALI_CALLS	arg	mali_calls	GPU and display	k	hakios.mali.cpp	every second, how many requests of each kind the programs made and the kernel's time in them
 MALI_FASTMAP	arg	mali_fastmap	GPU and display	k	hakios.mali.c	the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
 MALI_FLUSH	arg	mali_flush	GPU and display	k	hakios.mali.cpp	
 MALI_GOV	arg	mali_gov	GPU and display	k	hakios.mali.c	
 MALI_GOV_FRAME	arg	mali_gov_frame	GPU and display	k	hakios.mali.c	
-MALI_MHZ	arg	mali_mhz	GPU and display	k	hakios.mali.c	the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
+MALI_MHZ	arg	mali_mhz	GPU and display	k	hakios.exynos9810_g3d.c	the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
 MALI_NAP_US	arg	mali_nap_us	GPU and display	k	hakios.mali.c	
-MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	PLL_G3D left as the boot left it (the step stops if it does not run)
+MALI_PEEK	arg	mali_peek	GPU and display	k	hakios.mali.c	with mali_lock held, after a job chain
+MALI_PLL	arg	mali_pll	GPU and display	k	hakios.exynos9810_g3d.c	PLL_G3D left as the boot left it (the step stops if it does not run)
+MALI_SOC	arg	mali_soc	GPU and display	k	hakios.mali.c	the SoC's glue: exynos9810 (the Galaxy S9's, the default) or exynos8890 (the Note FE's) (a glue's own boot-args are in its file)
 MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
-MALI_UV	arg	mali_uv	GPU and display	k	hakios.mali.c	BUCK6 target in microvolts, 300000..950000 in 6250-uV steps (default 950000)
+MALI_UV	arg	mali_uv	GPU and display	k	hakios.exynos9810_g3d.c	BUCK6 target in microvolts, 300000..950000 in 6250-uV steps (default 950000)
 MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
 MAX77705_HAPTIC	arg	max77705_haptic	Audio and battery	k	hakios.max77705.c	
 MAX77705_IPCLK	arg	max77705_ipclk	Audio and battery	k	hakios.max77705.c	
@@ -256,6 +267,8 @@ MAX77705_STEPS	arg	max77705_steps	Audio and battery	k	hakios.max77705.c
 MAX77705_USBSW	arg	max77705_usbsw	Audio and battery	k	hakios.max77705.c	
 MAX98512	arg	max98512	Audio and battery	k	hakios.max98512.c	a look: the bus brought up (its clocks, the USI, the pins), both chips' revisions and registers
 MAX98512_GAIN	arg	max98512_gain	Audio and battery	k	hakios.max98512.c	the bottom speaker's gain at start, 1 to 5 (+3 to +15 dB; 1); the top one's is always 1
+MCP	arg	mcp	GPU and display	k	hakios.mali.cpp	
+MCS	arg	mcs	GPU and display	k	hakios.mali.cpp	
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
 METAL	arg	metal	GPU and display	ku	MiniIOMobileFramebuffer.cpp,hakios_metal_shown.c	say where Metal's device is (docs/metal-plan.md, step 1)
@@ -330,7 +343,8 @@ RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c
 RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
 ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
 RTC_PMIC	arg	rtc_pmic	User space	k	hakios.s2mps18_rtc.c	read the clock at start-up (the kernel's first ask for the time of day), log it, use it when valid
-S6SY761	arg	s6sy761	Touch and buttons	k	hakios.s6sy761.c	every address below belongs to this phone
+S6SY761	arg	s6sy761	Touch and buttons	k	hakios.s6sy761.c	
+S6SY761_BOARD	arg	s6sy761_board	Touch and buttons	k	hakios.s6sy761.c	the board's bus and IRQ pin (boards[]: starlte, gracerlte)
 S6SY761_IPCLK	arg	s6sy761_ipclk	Touch and buttons	k	hakios.s6sy761.c	the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
 S6SY761_LDO	arg	s6sy761_ldo	Touch and buttons	k	hakios.s6sy761.c	
 S6SY761_PRI	arg	s6sy761_pri	Touch and buttons	k	hakios.s6sy761.c	the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri)
@@ -397,14 +411,16 @@ TMU_ENABLE	arg	tmu_enable	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	start a b
 TMU_LOG	arg	tmu_log	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	a summary this often (0: only on a rise; 60)
 TMU_OFF	arg	tmu_off	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3 powers the phone off (PS_HOLD) when no charger is reported, instead of the loader's restart
 TMU_POLL	arg	tmu_poll	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	how often to read (200 to 60000; 1000, the BIG zone's polling-delay)
+TMU_SOC	arg	tmu_soc	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	the SoC's glue, exynos9810 (the Galaxy S9's) or exynos8890 (the Note FE's); without it the one
 TMU_STOP	arg	tmu_stop	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3's limit for the SoC's zones (40 to 115; 110)
 TMU_UNGATE	arg	tmu_ungate	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	open the TMU's PCLK gate if the boot left it forced shut
 TORCH	arg	torch	Haptics and torch	kl	hakios.s2mpb02_torch.c,hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the bus as found, the chip's ID, the flash block's registers, the two pins
 TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
 TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
+TOUCH_COALESCE	arg	touch_coalesce	Touch and buttons	k	hakios.input.c	a slow reader gets the newest pending MOVE, keeping DOWN/UP ordering
 TOUCH_FAULT	arg	touch_fault	User space	u	inject.c	the touch screen first made answers no "PrimaryUsagePage" (tests the remake)
 TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
-TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
+TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,hakios.dwc3.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
 TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
 TOUCH_RATE	arg	touch_rate	Touch and buttons	k	hakios.goodix.c	the chip reports twice as often (Xiaomi's game mode; 240 otherwise)
 TOUCH_SPI_HZ	arg	touch_spi_hz	Touch and buttons	k	hakios.goodix.c	the bus at N Hz (Android's device tree gives the chip 5 MHz)
@@ -421,7 +437,7 @@ UFS_NATIVE_LOG	arg	ufs_native_log	Storage and APFS	k	hakios.ufs.c
 UFS_NATIVE_RO	arg	ufs_native_ro	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_SLOTS	arg	ufs_native_slots	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_SOAK	arg	ufs_native_soak	Storage and APFS	k	hakios.ufs.c	
-UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
+UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, exynos8890
 UFS_NATIVE_SPIN	arg	ufs_native_spin	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_STEP	arg	ufs_native_step	Storage and APFS	k	hakios.ufshc.c	own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs)
 UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's test at start: the refusals, and writes put back (2: one block left written)
@@ -437,6 +453,8 @@ USB_GADGET_LDO	arg	usb_gadget_ldo	USB	k	hakios.dwc3.c	the glue puts the PHY's su
 USB_GADGET_POLL	arg	usb_gadget_poll	USB	k	hakios.dwc3.c	the poll period while a host is attached (1-50; 2)
 USB_GADGET_SOC	arg	usb_gadget_soc	USB	k	hakios.dwc3.c	
 USB_GADGET_SUSPHY	arg	usb_gadget_susphy	USB	k	hakios.dwc3.c	let the link suspend the 2.0 PHY when idle (GUSB2PHYCFG SUSPHY, as Linux does; off by default)
+USB_GADGET_TX_CHUNK	arg	usb_gadget_tx_chunk	USB	k	hakios.dwc3.c	
+USB_TX	arg	usb_tx	USB	k	hakios.dwc3.c	
 USTACKS	arg	ustacks	Debugging	k	user_exception_trace.c	
 USTACKS_AT	arg	ustacks_at	Debugging	k	user_exception_trace.c	
 USTACKS_COUNT	arg	ustacks_count	Debugging	k	user_exception_trace.c	

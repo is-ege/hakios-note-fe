@@ -30,5 +30,7 @@ struct hakios_usb_glue {
 
 /* drivers/core/hakios.exynos_usb.c; NULL from hakios.stubs.c when that driver is left out */
 const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void);
+/* devices/gracerlte/soc/drivers/core/hakios.exynos8890_usb.c; NULL likewise */
+const struct hakios_usb_glue *hakios_usb_glue_exynos8890(void);
 
 #endif /* _HAKIOS_USB_GLUE_H_ */

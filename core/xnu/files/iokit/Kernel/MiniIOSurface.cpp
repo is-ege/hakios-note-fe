@@ -1966,6 +1966,9 @@ IOSurfaceRootUserClient::lockCommon(uint32_t sid, uint32_t options, user_addr_t 
 
 		if (!(options & kSurfaceLockReadOnly)) {
 			sh->seed++;
+			if (ref->surface->gpuWriter != current_task()) {
+				__atomic_fetch_add(&ref->surface->otherWrites, 1, __ATOMIC_RELEASE);
+			}
 		}
 		seed = sh->seed;
 	}

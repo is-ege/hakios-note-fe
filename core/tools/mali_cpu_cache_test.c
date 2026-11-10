@@ -7,14 +7,19 @@
  * does not prove that every real IOSurface producer follows the seed protocol.
  */
 struct memory_model { uint32_t cpu, memory; bool dirty; unsigned cleans; };
-static void submit(struct mali_cpu_cache_stamp *stamp, struct memory_model *memory,
-                   uint32_t seed, bool external)
+static void submit_drawn(struct mali_cpu_cache_stamp *stamp, struct memory_model *memory,
+                         uint32_t seed, uint32_t other_writes, bool gpu_drawn, bool external)
 {
-    if (!mali_cpu_cache_needs_clean(stamp, seed, external)) return;
+    if (!mali_cpu_cache_needs_clean(stamp, seed, other_writes, gpu_drawn, external)) return;
     if (memory->dirty) memory->memory = memory->cpu;
     memory->dirty = false;
     memory->cleans++;
-    mali_cpu_cache_cleaned(stamp, seed, seed, external);
+    mali_cpu_cache_cleaned(stamp, seed, seed, other_writes, external);
+}
+static void submit(struct mali_cpu_cache_stamp *stamp, struct memory_model *memory,
+                   uint32_t seed, bool external)
+{
+    submit_drawn(stamp, memory, seed, 0, false, external);
 }
 
 int main(void)
@@ -44,10 +49,24 @@ int main(void)
     memory.cpu = 91; memory.dirty = true;
     submit(&first, &memory, 3, true);
     assert(memory.memory == 91 && memory.cleans == 7);
-    mali_cpu_cache_cleaned(&first, 10, 11, false);
-    assert(!first.valid && mali_cpu_cache_needs_clean(&first, 11, false));
-    mali_cpu_cache_cleaned(&first, UINT32_MAX, UINT32_MAX, false);
-    assert(mali_cpu_cache_needs_clean(&first, 0, false));
-    puts("PASS: CPU generations, GPU-only writes, independent clients, wrapped writes, racing seed and rollover");
+    mali_cpu_cache_cleaned(&first, 10, 11, 0, false);
+    assert(!first.valid && mali_cpu_cache_needs_clean(&first, 11, 0, false, false));
+    mali_cpu_cache_cleaned(&first, UINT32_MAX, UINT32_MAX, 0, false);
+    assert(mali_cpu_cache_needs_clean(&first, 0, 0, false, false));
+    /* A surface its own process's GPU alone draws: that process's locks move the seed without dirtying lines,
+     * another process's write lock must still be published. */
+    struct mali_cpu_cache_stamp drawn = {0};
+    struct memory_model target = { .cpu = 1, .dirty = true };
+    submit_drawn(&drawn, &target, 5, 0, true, false);
+    assert(target.memory == 1 && target.cleans == 1);
+    for (uint32_t seed = 6; seed < 106; seed++) submit_drawn(&drawn, &target, seed, 0, true, false);
+    assert(target.cleans == 1);
+    target.cpu = 2; target.dirty = true;
+    submit_drawn(&drawn, &target, 107, 1, true, false);
+    assert(target.memory == 2 && target.cleans == 2);
+    submit_drawn(&drawn, &target, 108, 1, false, false); /* no longer said to be the GPU's: the seed counts again */
+    assert(target.cleans == 3);
+    puts("PASS: CPU generations, GPU-only writes, independent clients, wrapped writes, racing seed and rollover, "
+         "GPU-drawn surfaces");
     return 0;
 }

@@ -118,21 +118,21 @@ calibration(void)
 	struct tmu_cal c;
 
 	/* one point (TRIMINFO0 bit 23 clear): error1 from [8:0], error2 not used */
-	c = tmu_cal_of(0x00006c37u, 0);                  /* error1 0x37 = 55, error2 0x36 */
+	c = tmu_cal_of(0x00006c37u, 0, TMU_EFUSE_VALUE);                  /* error1 0x37 = 55, error2 0x36 */
 	CHECK(!c.two_point && c.error1 == 55 && c.fell_back == 0, "one point %u", c.error1);
 	/* two points: error2 from [17:9] */
-	c = tmu_cal_of((115u << 9) | 55u, 1u << 23);
+	c = tmu_cal_of((115u << 9) | 55u, 1u << 23, TMU_EFUSE_VALUE);
 	CHECK(c.two_point && c.error1 == 55 && c.error2 == 115, "two point %u %u", c.error1, c.error2);
 	/* other bits of the word do not leak in (the trims at [22:18], bit 23) */
-	c = tmu_cal_of(0xffffffffu, 0);
+	c = tmu_cal_of(0xffffffffu, 0, TMU_EFUSE_VALUE);
 	CHECK(c.error1 == 0x1ff, "mask");
 	/* the fuse empty: the dt's 55 */
-	c = tmu_cal_of(0, 0);
+	c = tmu_cal_of(0, 0, TMU_EFUSE_VALUE);
 	CHECK(c.error1 == 55 && c.fell_back == 1, "efuse fallback");
 	/* two points with an empty second fuse: 55 >> 9 = 0, so one-point arithmetic */
-	c = tmu_cal_of(60, 1u << 23);
+	c = tmu_cal_of(60, 1u << 23, TMU_EFUSE_VALUE);
 	CHECK(!c.two_point && c.fell_back == 2 && c.error1 == 60, "second point empty");
-	c = tmu_cal_of((50u << 9) | 60u, 1u << 23);
+	c = tmu_cal_of((50u << 9) | 60u, 1u << 23, TMU_EFUSE_VALUE);
 	CHECK(!c.two_point && c.fell_back == 2, "second point below the first");
 }
 
@@ -140,13 +140,13 @@ static void
 arithmetic(void)
 {
 	/* the dt's own numbers: error1 55 (the efuse value), one point: 25 C = 55, 115 C (the hot trip) = 145 */
-	struct tmu_cal one = tmu_cal_of(0, 0);
+	struct tmu_cal one = tmu_cal_of(0, 0, TMU_EFUSE_VALUE);
 
 	CHECK(tmu_code_to_mc(&one, 55) == 25000, "55 -> %d", tmu_code_to_mc(&one, 55));
 	CHECK(tmu_c_to_code(&one, 115) == 145 && tmu_code_to_mc(&one, 145) == 115000, "hot trip code %d", tmu_c_to_code(&one, 115));
 	CHECK(tmu_c_to_code(&one, 110) == 140, "tmu_stop's code");
 	/* two points 55 at 25 C, 115 at 85 C: a degree a code */
-	struct tmu_cal two = tmu_cal_of((115u << 9) | 55u, 1u << 23);
+	struct tmu_cal two = tmu_cal_of((115u << 9) | 55u, 1u << 23, TMU_EFUSE_VALUE);
 	CHECK(tmu_code_to_mc(&two, 145) == 115000 && tmu_code_to_mc(&two, 115) == 85000, "two point line");
 
 	/* every code, a grid of fuses: our BSP-equivalent equals the BSP's formula; millidegrees agree with it */
@@ -155,7 +155,7 @@ arithmetic(void)
 			for (int span = 20; span < 160; span += 7) {
 				int e2 = e1 + span;
 				uint32_t trim = ((uint32_t)e2 << 9) | (uint32_t)e1, t0 = tp ? 1u << 23 : 0;
-				struct tmu_cal c = tmu_cal_of(trim, t0);
+				struct tmu_cal c = tmu_cal_of(trim, t0, TMU_EFUSE_VALUE);
 
 				CHECK(c.two_point == tp && c.error1 == e1 && (!tp || c.error2 == e2), "cal %d %d %d", tp, e1, e2);
 				for (int code = 0; code < 512; code++) {

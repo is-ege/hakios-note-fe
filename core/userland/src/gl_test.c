@@ -1,12 +1,16 @@
 /*
  * gl_test: one triangle through the OpenGL ES library of the image (lib/libOSMesa.8.dylib: Mesa,
  * with its Adreno driver when the kernel has kept the GPU on -- boot-arg adreno_keep=1 --, its
- * Mali driver on the Galaxy S9 when the kernel serves the GPU -- mali=9 --, and its software one
+ * Mali driver on the Galaxy S9 and the Note FE when the kernel serves the GPU -- mali=9 --, and its software one
  * when neither), read back and put on the panel. It says which driver drew, how long
  * it took and what a few pixels are, so that the picture need not be seen to be believed.
  *
  *   gl_test [SECONDS [WIDTH HEIGHT]]   keep the picture on the panel for so long (default 6: the
  *                                      window server draws over it with its next frame)
+ *   gl_test NAME=VALUE... [...]        the same with these in the environment, as env(1) would (a job list
+ *                                      cannot set it): PAN_MESA_DEBUG=trace,sync PANDECODE_DUMP_FILE=stderr has
+ *                                      panfrost decode every job chain to stderr and check each job after it;
+ *                                      PAN_MESA_DEBUG=noafbc draws into an uncompressed texture
  *   gl_test fill [WIDTH HEIGHT]        no picture: how long the GPU takes over a frame of that size
  *                                      (default 1125 x 2436, what the window server draws), by what
  *                                      is in it -- see fill()
@@ -258,6 +262,11 @@ main(int argc, char **argv)
 		0.0f, 0.7f, 0, 0, 1,
 	};
 	static unsigned char window[16 * 16 * 4];
+	while (argc > 1 && strchr(argv[1], '=') != NULL) {
+		putenv(argv[1]);
+		argc--;
+		argv++;
+	}
 	int seconds = argc > 1 ? atoi(argv[1]) : 6, width = argc > 3 ? atoi(argv[2]) : 1080;
 	int height = argc > 3 ? atoi(argv[3]) : 2400;
 	unsigned texture = 0, framebuffer = 0, program, coloured = 0;
@@ -349,6 +358,25 @@ main(int argc, char **argv)
 	    glGetError(), PIXEL(2, 2), PIXEL(width / 2, height / 2), PIXEL(width * 15 / 100, height * 22 / 100),
 	    PIXEL(width * 85 / 100, height * 22 / 100), PIXEL(width / 2, height * 80 / 100), coloured,
 	    (unsigned)(width * height), (unsigned)((uint64_t)coloured * 100 / (uint64_t)(width * height)));
+	/* not the triangle: where it went wrong, a pixel a cell, top row first. '.' the clear colour, '0' nothing
+	 * written, r g b the strongest of a colour over 60, '?' anything else */
+	if ((uint64_t)coloured * 100 < (uint64_t)width * height * 20 || (uint64_t)coloured * 100 > (uint64_t)width * height * 32) {
+		for (int row = 15; row >= 0; row--) {
+			char line[33];
+
+			for (int column = 0; column < 32; column++) {
+				const uint8_t *p = drawn + ((size_t)((2 * row + 1) * height / 32) * (size_t)width +
+				    (size_t)((2 * column + 1) * width / 64)) * 4;
+				int big = p[0] > p[1] ? (p[0] > p[2] ? 0 : 2) : (p[1] > p[2] ? 1 : 2);
+
+				line[column] = (p[0] | p[1] | p[2] | p[3]) == 0 ? '0' :
+				    abs(p[0] - 26) < 8 && abs(p[1] - 26) < 8 && abs(p[2] - 51) < 8 ? '.' :
+				    p[big] > 60 ? "rgb"[big] : '?';
+			}
+			line[32] = '\0';
+			printf("gl_test: map %s\n", line);
+		}
+	}
 
 	service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
 	if (service == 0) {

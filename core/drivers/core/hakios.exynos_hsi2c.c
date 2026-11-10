@@ -1,7 +1,8 @@
 /*
  * An Exynos HSI2C -- the I2C master of a USI block of the Exynos 9810 -- as the Galaxy S9's drivers use it: the
  * touch screen (hakios.s6sy761.c, USI03 of PERIC0) and the battery's fuel gauge and charger (hakios.max77705.c,
- * USI03 of CMGP). sys/hakios.exynos_hsi2c.h says how a driver describes its bus.
+ * USI03 of CMGP). sys/hakios.exynos_hsi2c.h says how a driver describes its bus. The same controller without a USI
+ * (usi_mode_pa 0: the Exynos 8890's, the Galaxy Note FE's MAX77854) skips the USI's mode word and USI_CON.
  *
  * What it takes before the first transfer, none of which the UEFI does: the block's clock gates forced on and its
  * Q-channel enabled (in its CMU), the USI block made an I2C (its mode word: 4), its two pins set to function 2.
@@ -54,6 +55,7 @@ extern void delay(int usec);
 #define TIMING_FS1              0x60
 #define TIMING_FS2              0x64
 #define TIMING_FS3              0x68
+#define TIMING_SLA              0x6C
 #define ADDR                    0x70
 #define USI_CON                 0xC4
 
@@ -96,18 +98,20 @@ bool
 hakios_hsi2c_map(struct hakios_hsi2c *bus, int (*say)(const char *, ...))
 {
 	bus->regs = ml_io_map(bus->regs_pa, 0x1000);
-	bus->usi = map_word(bus->usi_mode_pa);
+	bus->usi = bus->usi_mode_pa ? map_word(bus->usi_mode_pa) : 0;
 	bus->cmu = bus->cmu_pa ? ml_io_map(bus->cmu_pa, bus->cmu_size) : 0;
 	bus->pins = bus->pins_pa ? map_word(bus->pins_pa) : 0;
-	if (!bus->regs || !bus->usi || (bus->cmu_pa && !bus->cmu) || (bus->pins_pa && !bus->pins)) {
+	if (!bus->regs || (bus->usi_mode_pa && !bus->usi) || (bus->cmu_pa && !bus->cmu) || (bus->pins_pa && !bus->pins)) {
 		say("%s: a block of the bus could not be mapped\n", bus->name);
 		return false;
 	}
-	if (bus->cmu) {
+	if (bus->cmu && !bus->div && !bus->mux) {
+		say("%s: Q-channel %x\n", bus->name, bus->qch ? rd(bus->cmu, bus->qch) : 0);
+	} else if (bus->cmu) {
 		uint32_t div = rd(bus->cmu, bus->div);
 
 		say("%s: USI mode %x (4 is I2C), CMU mux %x, divider %x (400 MHz / %u = %u MHz if the mux takes the 400 MHz "
-		    "branch; assumed %u), gates %x %x %x %x, Q-channel %x\n", bus->name, *(volatile uint32_t *)bus->usi,
+		    "branch; assumed %u), gates %x %x %x %x, Q-channel %x\n", bus->name, bus->usi ? *(volatile uint32_t *)bus->usi : 0,
 		    rd(bus->cmu, bus->mux), div, (div & 0xf) + 1, 400 / ((div & 0xf) + 1), bus->ipclk_mhz,
 		    bus->ngates > 0 ? rd(bus->cmu, bus->gates[0]) : 0, bus->ngates > 1 ? rd(bus->cmu, bus->gates[1]) : 0,
 		    bus->ngates > 2 ? rd(bus->cmu, bus->gates[2]) : 0, bus->ngates > 3 ? rd(bus->cmu, bus->gates[3]) : 0,
@@ -128,7 +132,9 @@ hakios_hsi2c_power(struct hakios_hsi2c *bus)
 	if (bus->cmu && bus->qch) {
 		wr(bus->cmu, bus->qch, rd(bus->cmu, bus->qch) | 3);
 	}
-	*(volatile uint32_t *)bus->usi = USI_MODE_I2C;
+	if (bus->usi) {
+		*(volatile uint32_t *)bus->usi = USI_MODE_I2C;
+	}
 	if (bus->pins) {
 		uint32_t con = *(volatile uint32_t *)bus->pins;
 
@@ -147,6 +153,27 @@ hakios_hsi2c_power(struct hakios_hsi2c *bus)
 static void
 bus_timing(struct hakios_hsi2c *bus)
 {
+	if (bus->timing_counts) {
+		/*
+		 * Samsung's exynos5_i2c_set_timing for the 8890 (i2c-exynos5.c, fast speed): input clocks a bit
+		 * = (CLK_DIV + 1) * (TSCLK_L + TSCLK_H + 2) + 2 * ((FLT_CYCLE + 3) - (FLT_CYCLE + 3) % (CLK_DIV + 1)).
+		 * With masks written into these fields the Note FE's touch bus ran at 11 kHz, 9 ms an event (9 November).
+		 */
+		uint32_t flt = (rd(bus->regs, CONF) >> 16) & 7, total = bus->ipclk_mhz * 1000000 / bus->bus_hz - (flt + 3) * 2;
+		uint32_t div = 0, cycle, low, high;
+
+		while (div < 255 && (total + ((flt + 3) % (div + 1)) * 2) / (div + 1) >= 512) {
+			div++;
+		}
+		cycle = (total + ((flt + 3) % (div + 1)) * 2) / (div + 1) - 2;
+		high = cycle / 2;
+		low = cycle - high;
+		wr(bus->regs, TIMING_FS1, low << 24 | low << 16 | low << 8);
+		wr(bus->regs, TIMING_FS2, (low / 2) << 24 | 0xFu << 16 | low << 8 | high);
+		wr(bus->regs, TIMING_FS3, div << 16 | cycle);
+		wr(bus->regs, TIMING_SLA, low / 2);
+		return;
+	}
 	uint32_t div = bus->ipclk_mhz * 1000000 / (bus->bus_hz * 15);
 	uint32_t n = (9 * bus->ipclk_mhz) / ((div + 1) * 10);
 
@@ -167,7 +194,9 @@ hakios_hsi2c_reset(struct hakios_hsi2c *bus)
 {
 	vm_offset_t r = bus->regs;
 
-	wr(r, USI_CON, 0);
+	if (bus->usi) {
+		wr(r, USI_CON, 0);
+	}
 	wr(r, INT_STAT, rd(r, INT_STAT));
 	wr(r, CTL, rd(r, CTL) | CTL_SW_RST);
 	delay(10);
@@ -238,7 +267,7 @@ hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8
 			    "ADDR %08x USI_CON %08x USI_OPT %08x; pins CON %08x DAT %08x\n", bus->name, addr, reading ? "read" : "write",
 			    len, done, late, rd(r, CTL), rd(r, FIFO_CTL), rd(r, INT_EN), rd(r, INT_STAT), rd(r, FIFO_STAT), rd(r, CONF),
 			    rd(r, AUTO_CONF), rd(r, TIMEOUT), rd(r, TRANS_STATUS), rd(r, TIMING_FS1), rd(r, TIMING_FS2),
-			    rd(r, TIMING_FS3), rd(r, ADDR), rd(r, USI_CON), rd(r, 0xC8),
+			    rd(r, TIMING_FS3), rd(r, ADDR), bus->usi ? rd(r, USI_CON) : 0, bus->usi ? rd(r, 0xC8) : 0,
 			    bus->pins ? *(volatile uint32_t *)bus->pins : 0, bus->pins ? *(volatile uint32_t *)(bus->pins + 4) : 0);
 		}
 		hakios_hsi2c_reset(bus);

@@ -60,7 +60,13 @@
  * formulas and the dt's constants. Not known: whether S-Boot leaves the TMU running and its PCLK open (step 1 says), whether
  * the APM, which owns the TMU under Android, changes its registers while HakiOS runs, and the BIG zone's "balance" mode.
  *
+ * The SoC's part (where the blocks are, which sensors make a zone, the TMU's clock, tmu_enable's start, tmu_off's power
+ * off) is a glue's (hakios.exynos_tmu.h; tmu_soc=): hakios.exynos9810_tmu.c, which the text above describes, and the Note
+ * FE's devices/gracerlte/soc/drivers/core/hakios.exynos8890_tmu.c.
+ *
  * Boot-args:
+ *   tmu_soc=NAME         the SoC's glue, exynos9810 (the Galaxy S9's) or exynos8890 (the Note FE's); without it the one
+ *                        this kernel has, the 9810's first
  *   tmu=<1-3>            the steps: 1 reads, 2 publishes, 3 acts (0, or none: nothing)
  *   tmu_poll=<ms>        how often to read (200 to 60000; 1000, the BIG zone's polling-delay)
  *   tmu_log=<s>          a summary this often (0: only on a rise; 60)
@@ -91,8 +97,6 @@ extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int hakios_battery_temperature(void);  /* drivers/power/hakios.battery.c; a stand-in says -273 */
-extern bool hakios_exynos_power_off(const char *who, int (*say)(const char *, ...));  /* hakios.exynos_poweroff.c */
-extern void delay(int usec);
 
 SYSCTL_DECL(_kern_hakios);
 
@@ -111,18 +115,12 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define CMU_PERIS_PA            0x10020000u     /* cmucal-sfr.c:36 */
-#define CMU_PERIS_TMU_GATE      0x2014u         /* :1656 CLK_CON_GAT_GOUT_BLK_PERIS_UID_BUSIF_TMU_IPCLKPORT_PCLK */
-#define CMU_PERIS_TMU_QCH       0x3004u         /* :1675 QCH_CON_BUSIF_TMU_QCH */
-#define GATE_MANUAL             (1u << 20)      /* :7017 */
-#define GATE_CG_VAL             (1u << 21)      /* :7016 */
 #define NOT_READ_MC             (-273000)
 #define STRIKES                 3
 
-static vm_offset_t block_va[2], cmu_va;
-static const uint32_t block_pa[2] = { TMU_TOP_PA, TMU_SUB_PA };
-static const char *const block_name[2] = { "TMU_TOP", "TMU_SUB" };
-static struct tmu_cal cal[2][8];
+static const struct hakios_tmu_glue *glue;
+static vm_offset_t block_va[TMU_BLOCKS_MOST];
+static struct tmu_cal cal[TMU_BLOCKS_MOST][8];
 static uint32_t steps, poll_ms = 1000, log_seconds = 60, stop_celsius = 110, batt_stop_celsius = 60, power_off;
 static uint64_t last_log, reads;
 static int strikes, last_step;
@@ -134,7 +132,7 @@ static int temp_zone_mc[TMU_NZONES] = { NOT_READ_MC, NOT_READ_MC, NOT_READ_MC, N
 static int temp_max_mc = NOT_READ_MC, temp_reads, temp_battery_c = -273;
 static char temp_hottest[16] = "", temp_sensors[400] = "";
 
-SYSCTL_NODE(_kern_hakios, OID_AUTO, temp, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the Exynos 9810's TMU (drivers/power/hakios.exynos_tmu.c, tmu=2)");
+SYSCTL_NODE(_kern_hakios, OID_AUTO, temp, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the Exynos TMU (drivers/power/hakios.exynos_tmu.c, tmu=2)");
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, big_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_zone_mc[0], 0, "the big cores' hottest sensor, millidegrees");
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, little_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_zone_mc[1], 0, "the little cores' sensor, millidegrees");
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, g3d_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_zone_mc[2], 0, "the GPU's sensor, millidegrees");
@@ -177,13 +175,6 @@ rd(vm_offset_t base, uint32_t off)
 	return *(volatile uint32_t *)(base + off);
 }
 
-static inline void
-wr(vm_offset_t base, uint32_t off, uint32_t value)
-{
-	*(volatile uint32_t *)(base + off) = value;
-	__asm__ volatile ("dsb sy" ::: "memory");
-}
-
 static void
 text_of(char *out, size_t size, int32_t mc)
 {
@@ -204,25 +195,25 @@ describe(void)
 {
 	char one[16], two[16];
 
-	for (unsigned b = 0; b < 2; b++) {
+	for (unsigned b = 0; b < glue->nblocks; b++) {
 		vm_offset_t va = block_va[b];
 		uint32_t ctrl = rd(va, TMU_CONTROL), t0 = rd(va, TMU_TRIMINFO(0));
 
 		say("tmu: 1: %s %#x: CONTROL %08x (CORE_EN %u, THERM_TRIP_EN %u, TRIP_MODE %u, VREF %u, SLOPE %u), CONTROL1 %08x "
 		    "(NUM_PROBE %u, LPI %u), STATUS %08x, AVG_CON %08x, COUNTER %08x/%08x, TRIM0 %08x, EMUL_CON %08x; %s-point calibration\n",
-		    block_name[b], block_pa[b], ctrl, ctrl & TMU_CTRL_CORE_EN ? 1 : 0, ctrl & TMU_CTRL_TRIP_EN ? 1 : 0,
+		    glue->block_name[b], glue->block_pa[b], ctrl, ctrl & TMU_CTRL_CORE_EN ? 1 : 0, ctrl & TMU_CTRL_TRIP_EN ? 1 : 0,
 		    TMU_CTRL_TRIP_MODE(ctrl), (ctrl >> TMU_CTRL_VREF_SHIFT) & 0x1f, (ctrl >> TMU_CTRL_SLOPE_SHIFT) & 0xf,
 		    rd(va, TMU_CONTROL1), TMU_CON1_NUM_PROBE(rd(va, TMU_CONTROL1)), rd(va, TMU_CONTROL1) & TMU_CON1_LPI ? 1 : 0,
 		    rd(va, TMU_STATUS), rd(va, TMU_AVG_CON), rd(va, TMU_COUNTER_VALUE0), rd(va, TMU_COUNTER_VALUE1), rd(va, TMU_TRIM0),
 		    rd(va, TMU_EMUL_CON), TMU_TRIM_CAL_TYPE(t0) ? "two" : "one");
 		if (rd(va, TMU_EMUL_CON) & TMU_EMUL_ENABLE) {
-			say("tmu: 1: %s: EMULATION IS ON: its readings are a made-up temperature, not the chip's\n", block_name[b]);
+			say("tmu: 1: %s: EMULATION IS ON: its readings are a made-up temperature, not the chip's\n", glue->block_name[b]);
 		}
 		for (unsigned s = 0; s < 8; s++) {
 			uint16_t used = 0;
 
 			for (unsigned z = 0; z < TMU_NZONES; z++) {
-				if (tmu_zones[z].block == b && (tmu_zones[z].sensors & (1u << s))) {
+				if (glue->zones[z].block == b && (glue->zones[z].sensors & (1u << s))) {
 					used = 1;
 				}
 			}
@@ -236,7 +227,7 @@ describe(void)
 			text_of(one, sizeof(one), tmu_code_to_mc(c, code));
 			text_of(two, sizeof(two), tmu_code_to_mc(c, r7));
 			say("tmu: 1: %s sensor %u%s: TRIMINFO %08x (25 C = %u, 85 C = %u%s), code %u = %s C; RISE7 %u (%s C) RISE6 %u, "
-			    "INTEN %08x\n", block_name[b], s, used ? "" : " (in no zone)", trim, c->error1, c->error2,
+			    "INTEN %08x\n", glue->block_name[b], s, used ? "" : " (in no zone)", trim, c->error1, c->error2,
 			    c->fell_back == 1 ? ", fuse empty: the dt's 55" : c->fell_back == 2 ? ", second point unusable: one-point" : "",
 			    code, one, r7, r7 ? two : "-", r6, rd(va, tmu_inten_reg(s)));
 		}
@@ -247,7 +238,7 @@ static void
 power_off_or_return(void)
 {
 	if (power_off) {
-		(void)hakios_exynos_power_off("tmu: 3", say);  /* returns only if the phone is not off (hakios.exynos_poweroff.c) */
+		(void)glue->power_off("tmu: 3", say);   /* returns only if the phone is not off */
 	}
 	hakios_var_save_on_return();
 	hakios_adreno_stop();
@@ -265,7 +256,9 @@ look(void)
 
 	list[0] = 0;
 	for (unsigned z = 0; z < TMU_NZONES; z++) {
-		const struct tmu_zone *zone = &tmu_zones[z];
+		const struct tmu_zone *zone = &glue->zones[z];
+
+		bool valid = zone->valid == 0 || (rd(block_va[zone->block], TMU_STATUS) & zone->valid) != 0;
 
 		zone_mc[z] = INT32_MIN;
 		for (unsigned s = 0; s < 8; s++) {
@@ -275,7 +268,7 @@ look(void)
 			uint32_t code = code_of(zone->block, s);
 			int32_t mc = tmu_code_to_mc(&cal[zone->block][s], code);
 
-			if (!tmu_reading_ok(code, mc)) {
+			if (!valid || !tmu_reading_ok(code, mc)) {
 				snprintf(item, sizeof(item), "%s%u=? ", zone->name, s);
 			} else {
 				text_of(one, sizeof(one), mc);
@@ -313,7 +306,7 @@ look(void)
 		strlcpy(temp_sensors, list, sizeof(temp_sensors));
 		if (good != 0) {
 			temp_max_mc = hottest;
-			strlcpy(temp_hottest, tmu_zones[hot].name, sizeof(temp_hottest));
+			strlcpy(temp_hottest, glue->zones[hot].name, sizeof(temp_hottest));
 		}
 	}
 	if (good == 0) {
@@ -330,17 +323,17 @@ look(void)
 	absolutetime_to_nanoseconds(now - last_log, &ns);
 	text_of(one, sizeof(one), hottest);
 	if (step > last_step || last_log == 0 || (log_seconds != 0 && ns / NSEC_PER_SEC >= log_seconds)) {
-		say("tmu: %u sensors read; hottest %s at %s C; %s\n", good, tmu_zones[hot].name, one, list);
+		say("tmu: %u sensors read; hottest %s at %s C; %s\n", good, glue->zones[hot].name, one, list);
 		last_log = now;
 	}
 	last_step = step;
 	for (unsigned z = 0; z < TMU_NZONES; z++) {
-		if (zone_mc[z] != INT32_MIN && zone_mc[z] >= tmu_zones[z].android_cools_mc && !warned_cools[z]) {
+		if (zone_mc[z] != INT32_MIN && zone_mc[z] >= glue->zones[z].android_cools_mc && !warned_cools[z]) {
 			warned_cools[z] = true;
 			text_of(one, sizeof(one), zone_mc[z]);
-			say("tmu: WARNING: %s at %s C: Android would be cooling it from %d C; nothing here does%s\n", tmu_zones[z].name, one,
-			    tmu_zones[z].android_cools_mc / 1000, steps >= 3 ? "" : " (and without tmu=3 nothing stops the run)");
-		} else if (zone_mc[z] != INT32_MIN && zone_mc[z] < tmu_zones[z].android_cools_mc - 5000) {
+			say("tmu: WARNING: %s at %s C: Android would be cooling it from %d C; nothing here does%s\n", glue->zones[z].name, one,
+			    glue->zones[z].android_cools_mc / 1000, steps >= 3 ? "" : " (and without tmu=3 nothing stops the run)");
+		} else if (zone_mc[z] != INT32_MIN && zone_mc[z] < glue->zones[z].android_cools_mc - 5000) {
 			warned_cools[z] = false;
 		}
 	}
@@ -353,13 +346,13 @@ look(void)
 
 	strikes = (soc_hot || batt_hot) ? strikes + 1 : 0;
 	if (strikes > 0 && strikes < STRIKES) {
-		say("tmu: 3: %s %s C (limit %u), battery %d C (limit %u): %d of %d reads in a row\n", tmu_zones[hot].name, one, stop_celsius,
+		say("tmu: 3: %s %s C (limit %u), battery %d C (limit %u): %d of %d reads in a row\n", glue->zones[hot].name, one, stop_celsius,
 		    battery, batt_stop_celsius, strikes, STRIKES);
 	}
 	if (strikes >= STRIKES && !stopping) {
 		stopping = true;
 		say("\n--- tmu: TOO HOT: %s reads %s C (tmu_stop=%u, Android's hot trip %d), battery %d C (tmu_batt_stop=%u), %d reads "
-		    "in a row ---\n--- tmu: %s ---\n--- tmu: sensors: %s ---\n", tmu_zones[hot].name, one, stop_celsius,
+		    "in a row ---\n--- tmu: %s ---\n--- tmu: sensors: %s ---\n", glue->zones[hot].name, one, stop_celsius,
 		    TMU_ANDROID_HOT_MC / 1000, battery, batt_stop_celsius, STRIKES,
 		    power_off ? "powering the phone off (tmu_off=1)" : "ending the run: back to the loader, which restarts into recovery",
 		    list);
@@ -377,48 +370,23 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 	thread_call_enter_delayed(call, deadline);
 }
 
-/* tmu_enable=1: exynos9810_tmu_control()'s configuration and CORE_EN, never TRIP_EN, thresholds or interrupts */
-static void
-start_block(unsigned b)
-{
-	vm_offset_t va = block_va[b], top = block_va[TMU_BLOCK_TOP];
-	uint32_t ctrl = rd(va, TMU_CONTROL), v, want;
-
-	if (ctrl & TMU_CTRL_CORE_EN) {
-		say("tmu: enable: %s already runs (CONTROL %08x): left alone\n", block_name[b], ctrl);
-		return;
-	}
-	say("tmu: enable: %s is stopped (CONTROL %08x): configuring it as Android does, without the hardware trip\n", block_name[b], ctrl);
-	want = ctrl & ~((0x1fu << TMU_CTRL_VREF_SHIFT) | (0xfu << TMU_CTRL_SLOPE_SHIFT) | TMU_CTRL_TRIP_EN);
-	want |= TMU_TRIM_FIELD(rd(va, TMU_TRIMINFO(0))) << TMU_CTRL_VREF_SHIFT;
-	want |= TMU_TRIM_FIELD4(rd(va, TMU_TRIMINFO(1))) << TMU_CTRL_SLOPE_SHIFT;
-	wr(va, TMU_CONTROL, want);
-	v = rd(va, TMU_CONTROL1);
-	wr(va, TMU_CONTROL1, v & ~TMU_CON1_LPI);
-	uint32_t mode = TMU_TRIM_AVG_MODE(rd(va, TMU_TRIMINFO(2)));
-	v = rd(va, TMU_AVG_CON) & ~(TMU_AVG_MODE_MASK | TMU_AVG_DEM);
-	wr(va, TMU_AVG_CON, mode ? (v | mode | TMU_AVG_DEM) : v);
-	wr(va, TMU_COUNTER_VALUE0, (rd(va, TMU_COUNTER_VALUE0) & ~0xffffu) | TMU_SENSE_VALUE);
-	wr(va, TMU_COUNTER_VALUE1, (rd(va, TMU_COUNTER_VALUE1) & ~0xffff0000u) | (TMU_SENSE_VALUE << 16));
-	v = rd(va, TMU_TRIM0) & ~((0xfu << 20) | (0xfu << 12) | (0xfu << 8));
-	v |= TMU_TRIM_FIELD4(rd(top, TMU_TRIMINFO(3))) << 20;
-	v |= TMU_TRIM_FIELD4(rd(top, TMU_TRIMINFO(4))) << 12;
-	v |= TMU_TRIM_FIELD4(rd(top, TMU_TRIMINFO(5))) << 8;
-	wr(va, TMU_TRIM0, v);
-	wr(va, TMU_CONTROL, rd(va, TMU_CONTROL) | TMU_CTRL_CORE_EN);
-	delay(10 * 1000);
-	say("tmu: enable: %s now CONTROL %08x (wanted %08x), CONTROL1 %08x, AVG_CON %08x, COUNTER %08x/%08x, TRIM0 %08x (wanted %08x)\n",
-	    block_name[b], rd(va, TMU_CONTROL), want | TMU_CTRL_CORE_EN, rd(va, TMU_CONTROL1), rd(va, TMU_AVG_CON),
-	    rd(va, TMU_COUNTER_VALUE0), rd(va, TMU_COUNTER_VALUE1), rd(va, TMU_TRIM0), v);
-}
-
 __startup_func
 static void
 exynos_tmu_init(void)
 {
 	uint32_t value = 0, enable = 0, ungate = 0;
+	char soc[16] = "";
 
 	if (!PE_parse_boot_argn("tmu", &steps, sizeof(steps)) || steps == 0) {
+		return;
+	}
+	(void)PE_parse_boot_argn("tmu_soc", soc, sizeof(soc));
+	glue = strcmp(soc, "exynos8890") == 0 ? NULL : hakios_tmu_glue_exynos9810();
+	if (glue == NULL && strcmp(soc, "exynos9810") != 0) {
+		glue = hakios_tmu_glue_exynos8890();
+	}
+	if (glue == NULL) {
+		say("tmu: no glue for tmu_soc=%s in this kernel (exynos9810, exynos8890); off\n", soc);
 		return;
 	}
 	steps = steps > 3 ? 3 : steps;
@@ -435,9 +403,13 @@ exynos_tmu_init(void)
 		batt_stop_celsius = value;
 	}
 	(void)PE_parse_boot_argn("tmu_off", &power_off, sizeof(power_off));
+	if (power_off && glue->power_off == NULL) {
+		say("tmu: tmu_off=1: the %s glue cannot power the phone off: the loader's restart instead\n", glue->name);
+		power_off = 0;
+	}
 	(void)PE_parse_boot_argn("tmu_enable", &enable, sizeof(enable));
 	(void)PE_parse_boot_argn("tmu_ungate", &ungate, sizeof(ungate));
-	say("tmu: steps 1-%u (1 reads, 2 publishes kern.hakios.temp, 3 acts); every %u ms%s\n", steps, poll_ms,
+	say("tmu: the %s glue; steps 1-%u (1 reads, 2 publishes kern.hakios.temp, 3 acts); every %u ms%s\n", glue->name, steps, poll_ms,
 	    steps >= 3 ? "" : "; NOTHING STOPS A HOT RUN below tmu=3");
 	if (steps >= 3) {
 		say("tmu: 3: the run ends at %u C on any zone (Android's hot trip is %d) or %u C on the battery%s, %d reads in a row; %s\n",
@@ -445,46 +417,31 @@ exynos_tmu_init(void)
 		    power_off ? "then the phone is powered off (PS_HOLD) when no charger is attached" : "then the loader restarts the phone");
 	}
 
-	say("tmu: 1: reading CMU_PERIS's TMU gate (%#x +%#x) and Q-channel (+%#x)\n", CMU_PERIS_PA, CMU_PERIS_TMU_GATE, CMU_PERIS_TMU_QCH);
-	cmu_va = ml_io_map(CMU_PERIS_PA, 0x4000);
-	if (cmu_va == 0) {
-		say("tmu: could not map CMU_PERIS; off\n");
-		return;
-	}
-	uint32_t gate = rd(cmu_va, CMU_PERIS_TMU_GATE);
-	bool closed = (gate & GATE_MANUAL) && !(gate & GATE_CG_VAL);
-
-	say("tmu: 1: gate %08x (MANUAL %u, CG_VAL %u)%s, Q-channel %08x (ENABLE %u, CLOCK_REQ %u)\n", gate, gate & GATE_MANUAL ? 1 : 0,
-	    gate & GATE_CG_VAL ? 1 : 0, closed ? ": CLOSED" : ": open", rd(cmu_va, CMU_PERIS_TMU_QCH), rd(cmu_va, CMU_PERIS_TMU_QCH) & 1,
-	    (rd(cmu_va, CMU_PERIS_TMU_QCH) >> 1) & 1);
-	if (closed && ungate) {
-		say("tmu: 1: tmu_ungate=1: CG_VAL set\n");
-		wr(cmu_va, CMU_PERIS_TMU_GATE, gate | GATE_CG_VAL);
-		closed = !(rd(cmu_va, CMU_PERIS_TMU_GATE) & GATE_CG_VAL);
-		say("tmu: 1: gate now %08x\n", rd(cmu_va, CMU_PERIS_TMU_GATE));
-	}
-	if (closed) {
+	if (!glue->clock_open(say, ungate != 0)) {
 		say("tmu: the TMU's clock is shut: its registers are not touched (tmu_ungate=1 opens it); off\n");
 		return;
 	}
-	for (unsigned b = 0; b < 2; b++) {
-		block_va[b] = ml_io_map(block_pa[b], TMU_SIZE);
+	for (unsigned b = 0; b < glue->nblocks; b++) {
+		block_va[b] = ml_io_map(glue->block_pa[b], TMU_SIZE);
 		if (block_va[b] == 0) {
-			say("tmu: could not map %s at %#x; off\n", block_name[b], block_pa[b]);
+			say("tmu: could not map %s at %#x; off\n", glue->block_name[b], glue->block_pa[b]);
 			return;
 		}
 	}
-	for (unsigned b = 0; b < 2; b++) {
+	for (unsigned b = 0; b < glue->nblocks; b++) {
 		uint32_t t0 = rd(block_va[b], TMU_TRIMINFO(0));
 
 		for (unsigned s = 0; s < 8; s++) {
-			cal[b][s] = tmu_cal_of(rd(block_va[b], TMU_TRIMINFO(s)), t0);
+			cal[b][s] = tmu_cal_of(rd(block_va[b], TMU_TRIMINFO(s)), t0, glue->efuse);
 		}
 	}
 	describe();
-	if (enable) {
-		start_block(TMU_BLOCK_TOP);
-		start_block(TMU_BLOCK_SUB);
+	if (enable && glue->start_block == NULL) {
+		say("tmu: tmu_enable=1: the %s glue starts no block: nothing written\n", glue->name);
+	} else if (enable) {
+		for (unsigned b = 0; b < glue->nblocks; b++) {
+			glue->start_block(say, glue->block_name[b], block_va[b], block_va[0]);
+		}
 	}
 	if (steps >= 2) {
 		say("tmu: 2: publishing kern.hakios.temp.* and kern.hakios.thermal_*\n");

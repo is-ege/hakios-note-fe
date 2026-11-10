@@ -60,7 +60,7 @@ USER_WORD = re.compile(r'strcmp\(\s*word\s*,\s*"([a-z][a-z0-9_]*)=')
 
 # the group an argument is listed under: by the file that reads it (the first match decides)
 GROUPS = [
-    ("GPU and display", r"hakios\.(adreno|gpu|s6e3ha8|mali|backlight)\.|MiniIO(Surface|MobileFramebuffer)|gl_osmesa|eagl\.c"),
+    ("GPU and display", r"hakios\.(adreno|gpu|s6e3ha8|mali|backlight|exynos9810_g3d)\.|MiniIO(Surface|MobileFramebuffer)|gl_osmesa|eagl\.c"),
     ("Security stand-ins", r"kern_minimac|miniamfi"),
     ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211|exynos_pcie|brcmfmac)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/*/lx_*.c: the Linux layer
     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),

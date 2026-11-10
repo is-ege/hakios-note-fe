@@ -131,6 +131,13 @@ public:
 	 * ~0 while the program drawing into them has its frame still to send
 	 */
 	uint64_t                        maliSeq;
+	/*
+	 * ... the process that says its GPU alone draws the pixels, its locks only marking them changed (hakios.mali.cpp,
+	 * kHakiosMaliGPUDrawn; not held, only compared), and the locks for writing by any other (lockCommon): what the
+	 * Mali's cache cleaning of the pixels goes by then
+	 */
+	task_t                          gpuWriter;
+	uint32_t                        otherWrites;
 	struct minisurf_result          info;           /* addresses not filled in */
 	struct minisurf_plane           planes[MINISURF_MAX_PLANES];
 	OSDictionary *                  values;

@@ -1,5 +1,5 @@
 /*
- * HakiosMali: the Galaxy S9's Mali-G72 for programs to draw with.
+ * HakiosMali: the Mali (the Galaxy S9's G72, the Note FE's T880) for programs to draw with.
  *
  * Where it comes from: HakiOS's RedwoodMali, the same service for the Infinix Hot 20's Mali-G52,
  * kernel/iokit/Kernel/RedwoodMali.cpp of github.com/oosexgang/hakios-mt6768 at commit 93ea250 (Apple Public Source
@@ -88,6 +88,7 @@ enum {
 	kPanfrostGetParam       = 0x44,
 	kPanfrostGetBOOffset    = 0x45,
 	kPanfrostMadvise        = 0x48,
+	kHakiosMaliGPUDrawn     = 0x7b,         /* ours: a surface this process's GPU alone draws (struct mali_gpu_drawn) */
 	kHakiosMaliSurfaceSeq   = 0x7c,         /* ours: a surface's last job, or "drawing, not yet sent" (struct mali_surface_seq) */
 	kHakiosMaliWait         = 0x7d,         /* ours: wait for a job by its number (struct mali_wait) */
 	kHakiosMaliSurface      = 0x7e,         /* ours, as HakiosGPU's: an IOSurface's memory as a buffer */
@@ -102,6 +103,15 @@ struct mali_surface {
 	uint32_t width, height, pixelFormat, planes;    /* and what they are */
 };
 #define kMaliDescribe           0xffffffffu
+
+/*
+ * kHakiosMaliGPUDrawn: the window server's GL library (userland/src/eagl.c) says a surface it draws into is drawn by its
+ * GPU alone: its process's locks for writing (CoreAnimation's, the library's own) only mark it changed. Its cache
+ * cleaning (flushSubmit) then goes by the write locks of other processes instead of the seed.
+ */
+struct mali_gpu_drawn {
+	uint32_t surface;
+};
 
 /* kHakiosMaliWait: job `seq` (what kPanfrostSubmit gave back in `jc`) done within timeout_ns, or kIOReturnTimeout */
 struct mali_wait {
@@ -210,6 +220,7 @@ static IOLock * gMaliLock;
 static uint32_t gMaliFlush = 1;
 static uint32_t gMaliCacheProfile;
 static uint32_t gMaliCacheSeed;
+static uint32_t gMaliCalls;                    /* mali_calls=1: HakiosMaliCallsSecond() */
 enum { kCacheSubmit, kCacheClientRead, kCacheDisplayRead, kCacheStages };
 struct mali_cache_counters { uint64_t calls, bytes, wall, cpu; };
 static mali_cache_counters cacheCounters[kCacheStages], cachePrevious[kCacheStages];
@@ -290,15 +301,17 @@ flushSubmit(struct mali_buffer * b)
 		return;
 	}
 	uint32_t before = __atomic_load_n(&surface->shared()->seed, __ATOMIC_ACQUIRE);
+	uint32_t otherWrites = __atomic_load_n(&surface->otherWrites, __ATOMIC_ACQUIRE);
 	bool external = surface->client != NULL;
-	if (!mali_cpu_cache_needs_clean(&b->cpuCache, before, external)) {
+	bool gpuDrawn = surface->gpuWriter == current_task();     /* (the submitting process) */
+	if (!mali_cpu_cache_needs_clean(&b->cpuCache, before, otherWrites, gpuDrawn, external)) {
 		__atomic_fetch_add(&cacheSkippedCalls, 1, __ATOMIC_RELAXED);
 		__atomic_fetch_add(&cacheSkippedBytes, surface->info.allocSize, __ATOMIC_RELAXED);
 		return;
 	}
 	flushSurface(surface, kCacheSubmit);
 	uint32_t after = __atomic_load_n(&surface->shared()->seed, __ATOMIC_ACQUIRE);
-	mali_cpu_cache_cleaned(&b->cpuCache, before, after, external);
+	mali_cpu_cache_cleaned(&b->cpuCache, before, after, otherWrites, external);
 }
 
 bool
@@ -366,6 +379,7 @@ HakiosMaliStart(void)
 	if (!PE_parse_boot_argn("mali_cache_profile", &gMaliCacheProfile, sizeof(gMaliCacheProfile)))
 		(void)PE_parse_boot_argn("mcp", &gMaliCacheProfile, sizeof(gMaliCacheProfile));
 	(void)PE_parse_boot_argn("mcs", &gMaliCacheSeed, sizeof(gMaliCacheSeed));
+	(void)PE_parse_boot_argn("mali_calls", &gMaliCalls, sizeof(gMaliCalls));
 	gpu = OSTypeAlloc(HakiosMali);
 	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
 		OSSafeReleaseNULL(gpu);
@@ -396,6 +410,7 @@ class HakiosMaliUserClient : public IOUserClient
 	struct mali_buffer * newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t * handle,
 	    uint32_t flags);
 	IOReturn surfaceBuffer(struct mali_surface * request);
+	IOReturn request(uint32_t selector, IOExternalMethodArguments * args);
 
 public:
 	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
@@ -643,9 +658,52 @@ HakiosMaliUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, I
 	return ret;
 }
 
+/*
+ * Boot-arg mali_calls=1: every second, how many requests of each kind the programs made and the kernel's time in them
+ * ("mali-calls:"), to see what a frame's drawing asks of the kernel.
+ */
+static struct { uint64_t calls, time; } callCounters[128], callPrevious[128];
+
+extern "C" void
+HakiosMaliCallsSecond(void)
+{
+	char line[600];
+	int at = snprintf(line, sizeof(line), "mali-calls:");
+
+	if (!gMaliCalls) return;
+	for (unsigned k = 0; k < 128 && at < (int)sizeof(line); k++) {
+		uint64_t calls = __atomic_load_n(&callCounters[k].calls, __ATOMIC_RELAXED), time = __atomic_load_n(&callCounters[k].time,
+		    __ATOMIC_RELAXED), ns;
+
+		if (calls == callPrevious[k].calls) continue;
+		absolutetime_to_nanoseconds(time - callPrevious[k].time, &ns);
+		at += snprintf(line + at, sizeof(line) - (size_t)at, " %#x %llu (%llu us)", k, calls - callPrevious[k].calls, ns / 1000);
+		callPrevious[k].calls = calls;
+		callPrevious[k].time = time;
+	}
+	if (at > 11 && at < (int)sizeof(line) - 1) {
+		line[at] = '\n';
+		line[at + 1] = 0;
+		loader_log_line(line);
+	}
+}
+
 IOReturn
 HakiosMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
-    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
+    __unused IOExternalMethodDispatch * dispatch, __unused OSObject * target, __unused void * reference)
+{
+	uint64_t began = gMaliCalls ? mach_absolute_time() : 0;
+	IOReturn ret = request(selector, args);
+
+	if (gMaliCalls && selector < 128) {
+		__atomic_fetch_add(&callCounters[selector].calls, 1, __ATOMIC_RELAXED);
+		__atomic_fetch_add(&callCounters[selector].time, mach_absolute_time() - began, __ATOMIC_RELAXED);
+	}
+	return ret;
+}
+
+IOReturn
+HakiosMaliUserClient::request(uint32_t selector, IOExternalMethodArguments * args)
 {
 	union {
 		struct drm_gem_close close;
@@ -660,6 +718,7 @@ HakiosMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
 		struct mali_surface surface;
 		struct mali_wait waitseq;
 		struct mali_surface_seq sseq;
+		struct mali_gpu_drawn drawn;
 	} r;
 	size_t size = args->structureInputSize;
 	struct mali_buffer * b;
@@ -775,6 +834,17 @@ HakiosMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
 	case kHakiosMaliSurface:
 		ret = surfaceBuffer(&r.surface);
 		break;
+	case kHakiosMaliGPUDrawn: {
+		MiniIOSurface * surface = MiniIOSurfaceCopy(r.drawn.surface);
+
+		if (surface == NULL) {
+			ret = kIOReturnNotFound;
+			break;
+		}
+		surface->gpuWriter = current_task();
+		MiniIOSurfaceDrop(surface);
+		break;
+	}
 	case kHakiosMaliSurfaceSeq: {
 		MiniIOSurface * surface = MiniIOSurfaceCopy(r.sseq.surface);
 
