@@ -33,3 +33,10 @@ driver EXYNOS8890_TMU
 	requires EXYNOS_TMU
 	help    the Exynos 8890's side of the TMU driver (tmu_soc=exynos8890): the Note FE's four blocks (MNGS, APOLLO, GPU,
 	help    ISP), one sensor each, read only
+
+driver EXYNOS8890_PCIE
+	file    bsd/dev/hakios.exynos8890_pcie.c
+	default n
+	requires EXYNOS_PCIE
+	help    the Exynos 8890's side of the PCIe driver: the Note FE's channel 0 to its BCM4359 (the clock muxes of
+	help    CMU_FSYS1, the PHY's tables), stage 1
