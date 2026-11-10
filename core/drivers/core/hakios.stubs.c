@@ -158,6 +158,16 @@ void hakios_ssp_console(__unused const char *arg) {}  /* the USB console's "sens
 void hakios_exynos_pcie_init(void) {}
 void hakios_exynos_pcie_quiesce(void) {}
 #endif
+#ifndef HAKIOS_EXYNOS9810_PCIE
+struct hakios_pcie_glue;
+const struct hakios_pcie_glue *hakios_pcie_glue_exynos9810(void);
+const struct hakios_pcie_glue *hakios_pcie_glue_exynos9810(void) { return NULL; }     /* wifi_pcie= then takes the other, or does nothing */
+#endif
+#ifndef HAKIOS_EXYNOS8890_PCIE
+struct hakios_pcie_glue;
+const struct hakios_pcie_glue *hakios_pcie_glue_exynos8890(void);
+const struct hakios_pcie_glue *hakios_pcie_glue_exynos8890(void) { return NULL; }
+#endif
 #ifndef HAKIOS_BRCMFMAC
 void hakios_brcmfmac_start(void) {}     /* wifi_pcie=6 in a kernel without the S9's radio driver: the link stays as it is */
 const char *hakios_bcm4361_module(void) { return NULL; }       /* nobody reads the module's OTP */

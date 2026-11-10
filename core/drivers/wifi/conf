@@ -25,9 +25,15 @@ driver WIFI_STA
 
 driver EXYNOS_PCIE
 	file    bsd/dev/hakios.exynos_pcie.c
-	help    the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's
-	help    PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 ends
-	help    stage 1, 6 hands the device to BRCMFMAC's driver); no firmware here (devices/starlte/WIFI.md)
+	help    an Exynos phone's Wi-Fi, stage 1: its PCIe root complex (DesignWare and Samsung's PHY), WLAN_REG_ON and
+	help    PERST#, the link to the Broadcom chip and its ID and BARs (wifi_pcie=N, 5 ends stage 1, 6 hands the device
+	help    to BRCMFMAC's driver); the SoC's side a glue (EXYNOS9810_PCIE, the Note FE's EXYNOS8890_PCIE)
+
+driver EXYNOS9810_PCIE
+	file    bsd/dev/hakios.exynos9810_pcie.c
+	requires EXYNOS_PCIE
+	help    the Exynos 9810's side of the PCIe driver: the Galaxy S9's channel 0 to the BCM4361, its clock gates, PHY
+	help    tables and SysMMU (devices/starlte/WIFI.md)
 
 driver BRCMFMAC
 	file    bsd/dev/hakios.brcmfmac.c
