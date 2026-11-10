@@ -22,12 +22,12 @@ bool     hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size)
 
 /*
  * The endpoint's interrupt: INTx, which the root complex latches in ELBI's PCIE_IRQ_PULSE (INTA bit 0 ... INTD bit 6) and
- * passes to the GIC as SPI 253, level high, while a latched bit is enabled in PCIE_IRQ_EN_PULSE (Android's
+ * passes to the GIC as one SPI, level high, while a latched bit is enabled in PCIE_IRQ_EN_PULSE (Android's
  * exynos_pcie_enable_interrupts() and exynos_pcie_irq_handler()). intx(true) enables INTA to INTD and nothing else
  * (LEVEL and SPECIAL off, as Android), intx(false) none; intx_ack() reads the latch and writes it back (one clears),
  * and says what was latched. Neither sleeps nor takes a lock.
  */
-#define HAKIOS_EXYNOS_PCIE_INTX_SPI     253
+uint32_t hakios_exynos_pcie_intx_spi(void);                      /* the SoC's (the S9's 253, the Note FE's 204) */
 void     hakios_exynos_pcie_intx(bool on);
 uint32_t hakios_exynos_pcie_intx_ack(void);
 

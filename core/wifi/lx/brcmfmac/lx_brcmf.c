@@ -112,6 +112,11 @@ lx_brcmf_identify(void *ctx, u32 chip, u32 chiprev)
 	unsigned char cis[22 * 4];
 	unsigned i;
 
+	if (chip != 0x4361 && chip != 0x4347) {
+		lx_tell("lx: chip %x revision %u: not the BCM4361, whose OTP registers these are: the module is not read\n", chip,
+		    chiprev);
+		return;
+	}
 	if (!lx_brcmf_reached(2)) {
 		lx_tell("lx: brcmfmac=%u: the module's identity in OTP is read from brcmfmac=2 on\n", b.steps);
 		return;

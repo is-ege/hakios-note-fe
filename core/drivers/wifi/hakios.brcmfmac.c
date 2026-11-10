@@ -199,6 +199,14 @@ hakios_bcm4361_module(void)
  *   brcmfmac4361<rev>-pcie.txt       nvram.txt_..._<rev>              (boot-arg wifi_nvram=<name>; else the module's, from
  *                                                                      the chip's OTP, above; else a guess, logged as one)
  *   brcmfmac4361<rev>-pcie.clm_blob  bcmdhd_clm.blob                  (the regulatory data)
+ * The Note FE's BCM4359 C0 (brcmfmac's 4359c; Samsung's bcmdhd4359, concate_revision_bcm4359(): "_c0", and "_plus" for
+ * this phone):
+ *   brcmfmac4359c-pcie.bin           bcmdhd_sta.bin_c0_plus_blob      (wifi_fw=<name>)
+ *   brcmfmac4359c-pcie.clm_blob      bcmdhd_clm.blob                  (without it the firmware does not come up: a scan
+ *                                                                      is answered -4, not up; run 20261110T224508)
+ *   brcmfmac4359c-pcie.txt           nvram.txt_c0_plus                (the SEMCO module's; wifi_nvram=nvram.txt_murata_c0_plus
+ *                                                                      for Murata's: bcmdhd tells them apart by the
+ *                                                                      firmware's "cisdump", which is not asked here)
  */
 #define WIFI_FILE_MAX   (4u << 20)
 
@@ -238,6 +246,20 @@ bcmdhd_wifi_file(const char *last, uint64_t *size, char *used, size_t room, cons
 	const char *suffix;
 	const uint8_t *data;
 
+	if (strcmp(last, "brcmfmac4359c-pcie.bin") == 0) {
+		snprintf(used, room, "bcmdhd_sta.bin_c0_plus_blob");
+		PE_parse_boot_arg_str("wifi_fw", used, (int)room);
+		return radio_file(used, size, from);
+	}
+	if (strcmp(last, "brcmfmac4359c-pcie.clm_blob") == 0) {
+		snprintf(used, room, "bcmdhd_clm.blob");
+		return radio_file(used, size, from);
+	}
+	if (strcmp(last, "brcmfmac4359c-pcie.txt") == 0) {
+		snprintf(used, room, "nvram.txt_c0_plus");
+		PE_parse_boot_arg_str("wifi_nvram", used, (int)room);
+		return radio_file(used, size, from);
+	}
 	/* only brcmfmac's own names for this chip: brcmfmac4361b2-pcie.bin and so on (a board's own name is not mapped) */
 	if (strncmp(last, "brcmfmac4361", 12) != 0 || last[12] == 0 || last[13] == 0 || strncmp(last + 14, "-pcie.", 6) != 0) {
 		return NULL;
@@ -516,7 +538,7 @@ lx_os_pci_bar(unsigned bar, unsigned long long *address, unsigned long long *siz
  * object's function, which calls brcmfmac's handlers (the chip's mailbox read and cleared, which ends its INTA) and then
  * lx_os_irq_line_enable(). An INTA asserted again meanwhile is latched again, and fires as soon as the SPI is unmasked.
  */
-#define INTX_INTID      (32u + HAKIOS_EXYNOS_PCIE_INTX_SPI)
+#define INTX_INTID      (32u + hakios_exynos_pcie_intx_spi())
 
 static struct {
 	void (*function)(void *);
@@ -583,7 +605,7 @@ lx_os_irq_line_attach(void (*function)(void *), void *argument)
 		thread_set_thread_name(line.thread, "brcmfmac-intx");
 	}
 	say("brcmfmac: 5: THE GIC'S DISTRIBUTOR IS WRITTEN for the chip's interrupt: SPI %u (INTID %u) level-triggered, to "
-	    "this processor; then the root complex's INTA to INTD enabled (ELBI +0x00C)\n", HAKIOS_EXYNOS_PCIE_INTX_SPI, INTX_INTID);
+	    "this processor; then the root complex's INTA to INTD enabled (ELBI +0x00C)\n", hakios_exynos_pcie_intx_spi(), INTX_INTID);
 	lck_mtx_lock(&line_lock);
 	line.function = function;
 	line.argument = argument;
@@ -593,7 +615,7 @@ lx_os_irq_line_attach(void (*function)(void *), void *argument)
 		lck_mtx_lock(&line_lock);
 		line.attached = false;
 		lck_mtx_unlock(&line_lock);
-		say("brcmfmac: 5: the GIC refuses SPI %u (%d)\n", HAKIOS_EXYNOS_PCIE_INTX_SPI, kr);
+		say("brcmfmac: 5: the GIC refuses SPI %u (%d)\n", hakios_exynos_pcie_intx_spi(), kr);
 		return kr == KERN_NAME_EXISTS ? EBUSY : EINVAL;
 	}
 	gic_v3_spi_mask(INTX_INTID);
@@ -732,7 +754,7 @@ hakios_brcmfmac_start(void)
 		say("brcmfmac: the device is handed over but the driver is not started (brcmfmac=N, 1 to 8)\n");
 		return;
 	}
-	say("brcmfmac: brcmfmac=%u: Linux's brcmfmac on the BCM4361, step by step (devices/starlte/WIFI.md)\n", steps);
+	say("brcmfmac: brcmfmac=%u: Linux's brcmfmac on the phone's Broadcom chip, step by step\n", steps);
 	if ((error = hakios_lx_prepare()) != 0) {
 		say("brcmfmac: the driver's preparation fails: %d\n", error);
 		return;

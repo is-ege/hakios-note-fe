@@ -709,14 +709,14 @@ done
 # Samsung names let the kernel choose the module's NVRAM from its OTP instead
 # of requiring a guessed generic brcmfmac*.txt. Also usable with a RAM root and
 # wifi_vendor=0, without mounting or reading VENDOR at run time.
-for f in ../fw-wifi/bcmdhd_sta.bin_b[02] ../fw-wifi/bcmdhd_clm.blob ../fw-wifi/nvram.txt_*; do
+for f in ../fw-wifi/bcmdhd_sta.bin_b[02] ../fw-wifi/bcmdhd_sta.bin_c0_plus_blob ../fw-wifi/bcmdhd_clm.blob ../fw-wifi/nvram.txt_*; do
 	[ -f "$f" ] || continue
 	mkdir -p root/fw
 	install -m 0644 "$f" root/fw/
 done
 # ... with the phone's own address (brcmfmac=6: its /efs/wifi/.mac.info, as fw-wifi/mac.info) and the network to join
 # (brcmfmac=8: fw-wifi/network, as for the POCO above), both left out with SHARE=1
-if [ -f ../fw-wifi/bcmdhd_sta.bin_b2 ] || [ -f ../fw-wifi/bcmdhd_sta.bin_b0 ] || \
+if [ -f ../fw-wifi/bcmdhd_sta.bin_b2 ] || [ -f ../fw-wifi/bcmdhd_sta.bin_b0 ] || [ -f ../fw-wifi/bcmdhd_sta.bin_c0_plus_blob ] || \
     ls ../fw-wifi/brcmfmac4361*-pcie.bin >/dev/null 2>&1; then
 	rm -f root/fw/mac.info
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/mac.info ]; then install -m 0644 ../fw-wifi/mac.info root/fw/mac.info; fi

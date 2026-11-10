@@ -493,6 +493,12 @@ hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size)
 	return true;
 }
 
+uint32_t
+hakios_exynos_pcie_intx_spi(void)
+{
+	return glue != NULL ? glue->intx_spi : 0;
+}
+
 /*
  * INTx (sys/hakios.exynos_pcie.h): what Android's exynos_pcie_enable_interrupts() writes, INTA to INTD enabled in
  * IRQ_EN_PULSE and the TOE, LEVEL and SPECIAL sources off; the latch cleared first, so that nothing old fires.
