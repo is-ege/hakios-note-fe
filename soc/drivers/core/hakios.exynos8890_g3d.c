@@ -3,8 +3,8 @@
  * block's power domain, clock and supplies for the Mali driver (drivers/gpu/hakios.mali.c). S-Boot leaves the block on
  * and clocked (PLAN.md, Phase 6: run 20261108T155235): step 2 goes on only if the block is as S-Boot leaves it, at a
  * rate and voltage of Samsung's table. With mali_mhz=546 or 650 (approved by Ege, 8 November 2026) step 2 then raises
- * the supplies once to 650 MHz's (this chip's: below) and moves G3D_PLL to the rate, and the rates 260, 546 and 650 are
- * offered to mali_gov, which switches only the clock. Powering the domain on is not done here (not approved).
+ * the supplies to that rate's (this chip's: below) and moves G3D_PLL to the rate, and the rates 260, 546 and 650 are
+ * offered to mali_gov, each with its supplies. Powering the domain on is not done here (not approved).
  *
  *   power     the PMU's pd-g3d (the tree's pd-g3d@105c4060): configuration 0x105C4060 [3:0] = 0xF asks for it on,
  *             status 0x105C4064 [3:0] = 0xF when it is. The domain's power pin also switches BUCK6 (vdd_g3d) on
@@ -112,25 +112,26 @@ extern bool hakios_s2mps16_buck_volt(int (*say)(const char *, ...), unsigned buc
 /* B6CTRL3 for 260 MHz: 600 to 643.75 mV, the range of Samsung's table at that rate */
 #define B6CTRL3_LEAST           0x30
 #define B6CTRL3_MOST            0x37
-#define B6CTRL3_650MHZ          0x41            /* 706.25 mV */
-#define B11CTRL2_BOOT           0x48            /* 750 mV */
-#define B11CTRL2_650MHZ         0x50            /* 800 mV */
 #define USER_MUX_OSC            (1u << 27)
 #define MUX_GATE                (1u << 21)
 #define DIV_BUSY                (1u << 25)
 
-/* the rates offered (mali_mhz, mali_gov), lowest first: G3D_PLL's M, P, S (PLL1418X: 26 / P 2-8 MHz, VCO 600-1200 MHz) */
-static const struct g3d_rate { uint32_t mhz, pms, hpm; } rates[] = {
-	{ 260, (160u << 16) | (4u << 8) | 2u, 1 },
-	{ 546, (168u << 16) | (4u << 8) | 1u, 2 },
-	{ 650, (100u << 16) | (4u << 8) | 0u, 2 },
+/*
+ * the rates offered (mali_mhz, mali_gov), lowest first: G3D_PLL's M, P, S (PLL1418X: 26 / P 2-8 MHz, VCO 600-1200 MHz),
+ * and this chip's supplies at each: B6CTRL3 (600, 668.75, 706.25 mV) and B11CTRL2 (750, 800, 800 mV)
+ */
+static const struct g3d_rate { uint32_t mhz, pms, hpm; uint8_t b6, b11; } rates[] = {
+	{ 260, (160u << 16) | (4u << 8) | 2u, 1, 0x30, 0x48 },
+	{ 546, (168u << 16) | (4u << 8) | 1u, 2, 0x3B, 0x50 },
+	{ 650, (100u << 16) | (4u << 8) | 0u, 2, 0x41, 0x50 },
 };
 #define SWITCH_HPM              1               /* the ECT's 455 MHz level: the switch's (528 MHz) */
 static uint32_t mali_mhz = 260;
-static bool asv_known, raised;                  /* this chip's ASV; the supplies at 650 MHz's */
+static bool asv_known, raised;                  /* this chip's ASV; mali_mhz's rate set up, so the rates may be moved */
 
 static vm_offset_t pmu, top, ccore, g3d;
-static uint8_t b6ctrl3;
+static uint8_t b6ctrl3, b11ctrl2 = 0x48;        /* as they are now; BUCK11 from S-Boot's 750 mV */
+static unsigned volts;
 static bool supply_read;
 
 static int say(const char *format, ...) __printflike(1, 2);
@@ -281,7 +282,8 @@ rate_now(void)
 
 /*
  * G3D_PLL to a rate through the switch clock (the header's "rate"), with interrupts off; NULL, or where it stopped. A
- * step that times out leaves the G3D where it is: on the switch (528 MHz) or on G3D_PLL, the supplies at 650 MHz's.
+ * step that times out leaves the G3D where it is: on the switch (528 MHz) or on G3D_PLL. The caller holds the supplies
+ * at the higher of the two rates' meanwhile, which is 546 MHz's at least: enough for the switch.
  */
 static const char *
 switch_rate(const struct g3d_rate *to)
@@ -359,7 +361,26 @@ out:
 	return stuck;
 }
 
-/* mali_mhz above 260: the supplies once to 650 MHz's in Samsung's order (BUCK11, then BUCK6), then the clock */
+static int
+quiet(__unused const char *format, ...)
+{
+	return 0;
+}
+
+/* a supply to a rate's voltage, if it is not there; the first few said */
+static bool
+volt(unsigned buck, uint8_t *now, uint8_t to)
+{
+	if (*now != to) {
+		if (!hakios_s2mps16_buck_volt(volts++ < 6 ? say : quiet, buck, *now, to)) {
+			return false;
+		}
+		*now = to;
+	}
+	return true;
+}
+
+/* mali_mhz above 260: the supplies to that rate's in Samsung's order (BUCK11, then BUCK6), then the clock */
 static bool
 raise(void)
 {
@@ -386,16 +407,15 @@ raise(void)
 		    mali_mhz);
 		return true;
 	}
-	if (!hakios_s2mps16_buck_volt(say, 11, B11CTRL2_BOOT, B11CTRL2_650MHZ)) {
+	if (!volt(11, &b11ctrl2, to->b11)) {
 		say("mali: 2: BUCK11 not raised: 260\n");
 		return true;
 	}
-	if (!hakios_s2mps16_buck_volt(say, 6, B6CTRL3_LEAST, B6CTRL3_650MHZ)) {
+	if (!volt(6, &b6ctrl3, to->b6)) {
 		say("mali: 2: BUCK6 not raised: 260 (BUCK11 left at 800 mV, more than 260 MHz needs)\n");
 		return true;
 	}
 	raised = true;
-	b6ctrl3 = B6CTRL3_650MHZ;
 	stuck = switch_rate(to);
 	say("mali: 2: G3D_PLL %s%s: CON0 %#x, MUX_G3D %#x, SCLK_HPM %#x; %u MHz\n", stuck ? "STUCK at " : "moved",
 	    stuck ? stuck : "", rd(top, G3D_PLL_CON0), rd(g3d, MUX_G3D), rd(g3d, DIV_SCLK_HPM_G3D), mhz_now());
@@ -453,11 +473,11 @@ undo(void)
 		return;
 	}
 	if ((stuck = switch_rate(&rates[0])) != NULL) {
-		say("mali: G3D_PLL back to 260 MHz: stuck at %s; the supplies stay at 650 MHz's\n", stuck);
+		say("mali: G3D_PLL back to 260 MHz: stuck at %s; the supplies stay as they are\n", stuck);
 		return;
 	}
-	if (hakios_s2mps16_buck_volt(say, 6, B6CTRL3_650MHZ, B6CTRL3_LEAST)) {
-		(void)hakios_s2mps16_buck_volt(say, 11, B11CTRL2_650MHZ, B11CTRL2_BOOT);
+	if (volt(6, &b6ctrl3, rates[0].b6)) {
+		(void)volt(11, &b11ctrl2, rates[0].b11);
 	}
 	raised = false;
 	say("mali: the G3D back at S-Boot's 260 MHz\n");
@@ -475,12 +495,21 @@ rate_mhz(unsigned level)
 	return rates[level].mhz;
 }
 
-/* for mali_gov, between two jobs: the clock only, the supplies already at 650 MHz's */
+/* for mali_gov, between two jobs. Samsung's order: up BUCK11, BUCK6, the clock; down the clock, BUCK6, BUCK11 */
 static bool
 set_rate(unsigned level)
 {
-	const char *stuck = raised ? switch_rate(&rates[level]) : "the supplies not raised";
+	const struct g3d_rate *to = &rates[level];
+	bool up = to->b6 > b6ctrl3;
+	const char *stuck = NULL;
 
+	if (!raised) {
+		stuck = "mali_mhz's rate not set up";
+	} else if (up && !(volt(11, &b11ctrl2, to->b11) && volt(6, &b6ctrl3, to->b6))) {
+		stuck = "the supplies";
+	} else if ((stuck = switch_rate(to)) == NULL && !up && !(volt(6, &b6ctrl3, to->b6) && volt(11, &b11ctrl2, to->b11))) {
+		stuck = "the supplies (the clock moved; they are above what it needs)";
+	}
 	if (stuck != NULL) {
 		say("mali: G3D_PLL to %u MHz: stuck at %s\n", rates[level].mhz, stuck);
 	}
