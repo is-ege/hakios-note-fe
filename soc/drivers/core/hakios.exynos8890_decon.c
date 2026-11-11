@@ -11,20 +11,16 @@
  * vpp_reg_set_in_buf_addr, vpp_reg_wait_pingpong_clear). Only then is the next frame flipped (hakios_scanout_latched),
  * so no buffer is written while it is read.
  *
- * Two modes, as the S9's: 1 (fb_flip) flips on S-Boot's channel, the scaling the processor's; 2 (fb_dpp) the scaling in
- * hardware: the window moved to VGR1 (vpp7, channel 6): on the 8890 only VGR0 and VGR1 scale (Samsung's
- * vpp_reg_set_in_format refuses scaling on the G and VG channels; VG0 was tried on the phone, 8 November: its scaler's
- * registers read back 0 and the DECON stalled). They are the VPP1 group (0x13E0x000), in pd-disp1 with CMU_DISP1's
- * clocks: both checked before VGR1 is read at all (S-Boot leaves pd-disp1 on). VGR1, not VGR0: S-Boot's resource
- * registers mark VGR0's channel apart from the rest (RESOURCE_SEL_1 0x33033333, occupancy bit 20), which Samsung's
- * driver does not explain; after the switch the DECON's resource-conflict bit is read. It reads the iPhone's 1125 x 2436 picture
- * from three buffers of that size and scales it to the window: the panel, or with fb_aspect=1 the panel's largest
- * part of the picture's shape, centred (the rest is the blender's background). Before the window moves, VGR1 is set up
- * from idle and its registers forced in (SFR_UPDATE_FORCE); after, three refreshes are waited for and its error bits
- * read: any error, a resource conflict, or the DECON not taking the change, and the window goes back to G1 and the boot
- * buffer. The
- * coefficients are Catmull-Rom's, worked out here for the nine phases the registers take, in units of 1/128 (each
- * row of Samsung's tables sums to 128), as the S9's driver does in 1/512.
+ * Two modes, as the S9's: 1 (fb_flip) flips on S-Boot's channel, the scaling the processor's; 2 (fb_dpp) the scaling
+ * the panel's: the S6E3HA5 enlarges 1080 x 1920 to its 1440 x 2560 itself (Samsung's "FHD" screen setting, its
+ * CONFIG_FB_DSU: decon_dsu_handler, decon_reg_configure_lcd_dsu, decon_reg_set_partial_update). Between two frames,
+ * the trigger masked: the two DSC encoders' picture parameters (the panel driver's table for that size, each encoder
+ * half the width), the blender's, splitter's, frame FIFOs' and interface's sizes, then the DSIM and the panel
+ * (hakios_s6e3ha5_resolution), then the window: the display's own picture (1035 x 1840), not scaled, in the middle of
+ * the 1080 x 1920, the rest the blender's black. Each register is first compared with what Samsung's arithmetic gives
+ * for 1440 x 2560: a DECON that S-Boot set up otherwise is left alone. If no frame ends afterwards, everything goes
+ * back. (The DECON's own scalers, VGR0 and VGR1, need a call into the secure world that Samsung's kernel makes and
+ * this one does not; the code that tried VGR1 is in this file's history.)
  *
  * The panel's TE reaches the DECON through pin gpb0-1 (PERIC0, 0x136D00E0) in its function 2 (Samsung's pinctrl state
  * decon_te_on, the tree's decon_f_te_on). With the pin left an input, the DECON is never held back for a TE: measured on
@@ -53,7 +49,8 @@
  * counts them the same way), said every 5 s while they change.
  *
  * Registers (Samsung's kernel for the 8890, LineageOS android_kernel_samsung_universal8890, drivers/video/fbdev/exynos/
- * decon_8890: regs-decon.h, decon_reg_8890.c decon_get_win_channel, decon_common.h enum decon_idma_type; vpp/regs-vpp.h,
+ * decon_8890: regs-decon.h, decon_reg_8890.c decon_get_win_channel, dsc_reg_init, decon_reg_config_dsc_size,
+ * decon_common.h enum decon_idma_type; vpp/regs-vpp.h,
  * vpp/vpp_reg_8890.c; the phone's device tree: decon_f@0x13960000, vpp@0x13951000-0x13E05000 as vpp0-8, vppN serving
  * idma type N. GPL-2.0: read for these facts, nothing copied):
  *   DECON_F: GLOBAL_CONTROL 0x000 (bit 8 command mode, bit 4 running), WIN_CONTROL(w) 0x130 + 0x20 w (bit 0 on, bits
@@ -133,6 +130,7 @@ say(const char *format, ...)
 #define  WIN_CHMAP_MASK         (7u << 12)
 #define WIN_START(w)            (0x134 + 0x20 * (w))
 #define WIN_END(w)              (0x138 + 0x20 * (w))
+#define WIN_PIXEL_COUNT(w)      (0x144 + 0x20 * (w))    /* the window's pixels: the DECON waits for as many */
 #define WINDOWS                 8
 
 #define VG_ENABLE               0x00
@@ -150,17 +148,7 @@ say(const char *format, ...)
 #define VG_SCALED_SIZE          0x2C
 #define VG_H_RATIO              0x44
 #define VG_V_RATIO              0x48
-#define VG_QOS_LUT_LO           0x60
-#define VG_QOS_LUT_HI           0x64
-#define VG_V_COEF(n, s, x)      (0x200 + 4 * (n) + 0x24 * (s) + 0x200 * (x))
-#define VG_H_COEF(n, s, x)      (0x290 + 4 * (n) + 0x24 * (s) + 0x200 * (x))
-#define VG_YH_POS               0x5B0
-#define VG_YV_POS               0x5B4
-#define VG_CH_POS               0x5B8
-#define VG_CV_POS               0x5BC
-#define VG_DEADLOCK_NUM         0xA00
 #define VG_SMART_IF_PIXELS      0xA48
-#define VG_GATING               0xA54
 #define VG_BASE_Y               0x74
 #define VG_BASE_CB              0x94
 #define VG_SHA_BASE_Y           0xB74
@@ -170,14 +158,23 @@ static const uint64_t vpp_pa[8] = { 0x13951000, 0x13952000, 0x13953000, 0x139540
 	                            0x13E03000, 0x13E04000 };
 static const char *const type_name[8] = { "G0", "G1", "VG0", "VG1", "G2", "G3", "VGR0", "VGR1" };
 static const unsigned type_of_channel[8] = { 1, 4, 5, 2, 3, 6, 7, 0 };
-#define TYPE_SCALER             7               /* VGR1 */
-#define CHANNEL_SCALER          6
-#define INT_RESOURCE_CONFLICT   (1u << 18)
-#define PMU_PA                  0x105C4000UL
-#define  PD_DISP1_STATUS        0x1A4           /* low 4 bits 0xF: on */
-#define CMU_DISP1_PA            0x13F00000UL
-/* the VPP1 group's gates (S5E8890-cmu.c): value and, 0x1000 above, manual mode; shut = manual and not on */
-static const struct { uint32_t reg, bit; } vpp1_gates[] = { { 0x800, 0 }, { 0x804, 0 }, { 0x820, 4 }, { 0x820, 15 } };
+/* the sizes a resolution sets (regs-decon.h); the encoders' are 0x2000 and 0x3000 above the DECON */
+#define BLENDER_BG_IMAGE_SIZE   0x110
+#define BLENDER_BG_PIXELS       0x114
+#define DISPIF0_SIZE_0          0x0A0
+#define DISPIF0_SIZE_1          0x0A4
+#define SPLITTER_SIZE_0         0x244
+#define SPLITTER_SIZE_1         0x248
+#define FRAME_FIFO_0_SIZE_0     0x250
+#define FRAME_FIFO_0_SIZE_1     0x254
+#define FRAME_FIFO_1_SIZE_0     0x258
+#define FRAME_FIFO_1_SIZE_1     0x25C
+#define DSC(e)                  (0x2000 + 0x1000 * (e))
+#define DSC_PPS(n)              (0x20 + (n))    /* the picture parameters' bytes n to n + 3, the first the highest */
+#define DSC_IN_PIXEL_COUNT      0x0C
+#define DSC_COMP_PIXEL_COUNT    0x10
+#define LCD_REGS                30
+#define LCD_REGS_SURE           26              /* the rest only where S-Boot had Samsung's value */
 /* VCLK0's path (decon_vclk42): CMU_TOP's mux (bits 12-13, 2 BUS2) and divider (bits 0-3, 25 busy), its gate; CMU_DISP0's
  * user mux (bit 12: 1 TOP's, 0 the oscillator), the DECON's mux (bits 12-14: 0 the user mux, 2 DISP_PLL's mux; status
  * one-hot from bit 12), DISP_PLL's mux (bit 12: 0 the oscillator) */
@@ -193,14 +190,17 @@ static const struct { uint32_t reg, bit; } vpp1_gates[] = { { 0x800, 0 }, { 0x80
 #define  DISP0_VCLK0_DIV        0x408
 #define  DISP0_VCLK0_MUX_STAT   0x660
 
-static vm_offset_t decon, vpp, boot_vpp; /* vpp: the channel the window reads now */
+static vm_offset_t decon, vpp;           /* vpp: the channel the window reads */
 static int probed;                      /* 1: as expected; -1: not, nothing is written */
 static unsigned win, boot_type;
-static uint32_t boot_base, boot_ctl, boot_win_start, boot_win_end, boot_bg;
-static int mode;                        /* 0 the boot buffer, 1 flips on G1, 2 VGR1's scaler */
-static bool aspect_active;
-static struct hakios_viewport active_viewport;
+static uint32_t boot_base, boot_win_start, boot_win_end, boot_bg;
+static int mode;                        /* 0 the boot buffer, 1 flips on G1, 2 the panel's scaler */
+static struct hakios_viewport window;   /* mode 2: where the picture is ... */
+static uint32_t lcd_w, lcd_h;           /* ... on what the DECON sends; the panel's own size otherwise */
 static uint32_t panel_w, panel_h;
+static uint32_t boot_src, boot_img, boot_scaled, boot_pixels;
+static uint32_t lcd_boot[LCD_REGS];      /* lcd_reg's values as S-Boot left them */
+static bool hold;                       /* the watcher leaves the trigger masked at a frame's end */
 static uint64_t buffers[4];
 static unsigned nbuffers;
 static uint32_t flipped;                /* the address last asked for */
@@ -297,7 +297,9 @@ watch(__unused void *arg, __unused wait_result_t wr_)
 					say("exynos8890_decon: VCLK0 %s\n", vclk == 2 ? "at 42 MHz (BUS2 / 16)" : "left at 26 MHz");
 				}
 				/* the hardware masked itself at the frame's start (auto mask): unmasked now, for the next TE */
-				wr(decon, TRIG_CONTROL, (rd(decon, TRIG_CONTROL) & ~TRIG_HW_MASK) | TRIG_AUTO_MASK);
+				if (!hold) {
+					wr(decon, TRIG_CONTROL, (rd(decon, TRIG_CONTROL) & ~TRIG_HW_MASK) | TRIG_AUTO_MASK);
+				}
 			}
 			if ((p & INT_FRAME_DONE) && started != 0) {
 				uint64_t t = now - started;     /* (1 ms polling: within a millisecond or two) */
@@ -385,7 +387,7 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 		return -1;
 	}
 	boot_type = type_of_channel[WIN_CHMAP(ctl)];
-	if ((boot_vpp = vpp = ml_io_map(vpp_pa[boot_type], 0x1000)) == 0) {
+	if ((vpp = ml_io_map(vpp_pa[boot_type], 0x1000)) == 0) {
 		say("exynos8890_decon: cannot map %s\n", type_name[boot_type]);
 		return -1;
 	}
@@ -401,12 +403,15 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 		return -1;
 	}
 	flipped = boot_base;
-	boot_ctl = ctl;
 	boot_win_start = rd(decon, WIN_START(win));
 	boot_win_end = rd(decon, WIN_END(win));
 	boot_bg = rd(decon, BLENDER_BG_COLOR);
-	panel_w = (boot_win_end & 0x1fff) + 1;
-	panel_h = (boot_win_end >> 16 & 0x1fff) + 1;
+	lcd_w = panel_w = (boot_win_end & 0x1fff) + 1;
+	lcd_h = panel_h = (boot_win_end >> 16 & 0x1fff) + 1;
+	boot_src = rd(vpp, VG_SRC_SIZE);
+	boot_img = rd(vpp, VG_IMG_SIZE);
+	boot_scaled = rd(vpp, VG_SCALED_SIZE);
+	boot_pixels = rd(vpp, VG_SMART_IF_PIXELS);
 	probed = 1;
 	say("exynos8890_decon: resources: occupancy %x %x, selection %x %x; background %x\n", rd(decon, 0x10),
 	    rd(decon, 0x14), rd(decon, 0x18), rd(decon, 0x1C), boot_bg);
@@ -508,184 +513,189 @@ hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
 	return 0;
 }
 
-/* Catmull-Rom's weight of the pixel `k` (-1 .. 2) for a point `t` / 16 past pixel 0, in 1/128 */
-static int
-cubic(int k, int t)
-{
-	/* in 1/(2 * 16^3) units: w(x) for |x| <= 1: 3|x|^3 - 5|x|^2 + 2; 1 < |x| < 2: -|x|^3 + 5|x|^2 - 8|x| + 4 */
-	int x = k * 16 - t, a = x < 0 ? -x : x;
-	int64_t w;
-
-	if (a <= 16) {
-		w = 3LL * a * a * a - 5LL * 16 * a * a + 2LL * 16 * 16 * 16;
-	} else if (a < 32) {
-		w = -1LL * a * a * a + 5LL * 16 * a * a - 8LL * 16 * 16 * a + 4LL * 16 * 16 * 16;
-	} else {
-		w = 0;
-	}
-	return (int)((w * 128 + (w >= 0 ? 4096 : -4096)) / 8192);
-}
-
-/* the scaler: sw x sh to dw x dh, the nine phases' taps (the other seven the hardware's mirror), both banks */
-static void
-setup_scaler(vm_offset_t g, uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh)
-{
-	int16_t c[9][4];
-
-	for (int t = 0; t < 9; t++) {
-		int sum = 0;
-
-		for (int k = 0; k < 4; k++) {
-			c[t][k] = (int16_t)cubic(k - 1, t);
-			sum += c[t][k];
-		}
-		c[t][t < 8 ? 1 : 2] += (int16_t)(128 - sum);
-	}
-	for (unsigned x = 0; x < 2; x++) {
-		for (unsigned n = 0; n < 9; n++) {
-			/* 8 taps across: pixel 0 is tap 3, the four are taps 2 to 5; 4 down: pixel 0 is tap 1 */
-			for (unsigned s = 0; s < 8; s++) {
-				wr(g, VG_H_COEF(n, s, x), (uint32_t)(s >= 2 && s <= 5 ? c[n][s - 2] : 0) & 0x7ff);
-			}
-			for (unsigned s = 0; s < 4; s++) {
-				wr(g, VG_V_COEF(n, s, x), (uint32_t)c[n][s] & 0x7ff);
-			}
-		}
-	}
-	wr(g, VG_H_RATIO, (uint32_t)(((uint64_t)sw << 20) / dw));
-	wr(g, VG_V_RATIO, (uint32_t)(((uint64_t)sh << 20) / dh));
-	wr(g, VG_YH_POS, (uint32_t)(int32_t)((((int64_t)sw - dw) << 20) / (2 * (int64_t)dw)));
-	wr(g, VG_YV_POS, (uint32_t)(int32_t)((((int64_t)sh - dh) << 20) / (2 * (int64_t)dh)));
-	wr(g, VG_CH_POS, (uint32_t)(int32_t)((((int64_t)sw - dw) << 20) / (2 * (int64_t)dw)));
-	wr(g, VG_CV_POS, (uint32_t)(int32_t)((((int64_t)sh - dh) << 20) / (2 * (int64_t)dh)));
-	say("exynos8890_decon: VGR1 scaler: %ux%u to %ux%u, ratio %x/%x, phases %d/%d, taps at half a pixel %d %d %d %d\n",
-	    sw, sh, dw, dh, rd(g, VG_H_RATIO), rd(g, VG_V_RATIO), (int32_t)rd(g, VG_YH_POS), (int32_t)rd(g, VG_YV_POS),
-	    c[8][0], c[8][1], c[8][2], c[8][3]);
-}
-
 static void
 dump_vpp(const char *what, vm_offset_t g)
 {
 	say("exynos8890_decon: %s: enable %x irq %x in %x out %x src %x offset %x img %x scaled %x ratio %x/%x base %08x "
-	    "reading %08x ping-pong %x\n", what, rd(g, VG_ENABLE), rd(g, VG_IRQ), rd(g, VG_IN_CON), rd(g, VG_OUT_CON),
+	    "reading %08x ping-pong %x pixels %x\n", what, rd(g, VG_ENABLE), rd(g, VG_IRQ), rd(g, VG_IN_CON), rd(g, VG_OUT_CON),
 	    rd(g, VG_SRC_SIZE), rd(g, VG_SRC_OFFSET), rd(g, VG_IMG_SIZE), rd(g, VG_SCALED_SIZE), rd(g, VG_H_RATIO),
-	    rd(g, VG_V_RATIO), rd(g, VG_BASE_Y), rd(g, VG_SHA_BASE_Y), rd(g, VG_PINGPONG));
+	    rd(g, VG_V_RATIO), rd(g, VG_BASE_Y), rd(g, VG_SHA_BASE_Y), rd(g, VG_PINGPONG), rd(g, VG_SMART_IF_PIXELS));
 }
 
-/* pd-disp1 on and none of the VPP1 group's gates shut: VGR1 can be read */
-static bool
-vpp1_alive(void)
-{
-	vm_offset_t pmu = ml_io_map(PMU_PA, 0x1000), cmu = ml_io_map(CMU_DISP1_PA, 0x2000);
+/* drivers/gpu/hakios.s6e3ha5.c: the DSC picture parameters the panel takes at a width, and the DSIM and panel told */
+extern const uint8_t *hakios_s6e3ha5_pps(uint32_t width);
+extern bool hakios_s6e3ha5_resolution(uint32_t width);
 
-	if (pmu == 0 || cmu == 0 || (rd(pmu, PD_DISP1_STATUS) & 0xf) != 0xf) {
-		say("exynos8890_decon: pd-disp1 is not on (status %x): VGR1 not read\n", pmu ? rd(pmu, PD_DISP1_STATUS) : 0);
+/* what a resolution sets, in Samsung's arithmetic (two encoders, a slice each, compressed to a third) */
+static const uint32_t lcd_reg[LCD_REGS] = {
+	BLENDER_BG_IMAGE_SIZE, BLENDER_BG_PIXELS, SPLITTER_SIZE_0, SPLITTER_SIZE_1, FRAME_FIFO_0_SIZE_0, FRAME_FIFO_0_SIZE_1,
+	FRAME_FIFO_1_SIZE_0, FRAME_FIFO_1_SIZE_1, DISPIF0_SIZE_0, DISPIF0_SIZE_1,
+	DSC(0) + DSC_PPS(4), DSC(0) + DSC_PPS(8), DSC(0) + DSC_PPS(12), DSC(0) + DSC_PPS(16), DSC(0) + DSC_PPS(20),
+	DSC(0) + DSC_PPS(24), DSC(0) + DSC_PPS(28), DSC(0) + DSC_PPS(32),
+	DSC(1) + DSC_PPS(4), DSC(1) + DSC_PPS(8), DSC(1) + DSC_PPS(12), DSC(1) + DSC_PPS(16), DSC(1) + DSC_PPS(20),
+	DSC(1) + DSC_PPS(24), DSC(1) + DSC_PPS(28), DSC(1) + DSC_PPS(32),
+	DSC(0) + DSC_IN_PIXEL_COUNT, DSC(0) + DSC_COMP_PIXEL_COUNT, DSC(1) + DSC_IN_PIXEL_COUNT, DSC(1) + DSC_COMP_PIXEL_COUNT,
+};
+
+static bool
+lcd_values(uint32_t w, uint32_t h, uint32_t *v)
+{
+	const uint8_t *pps = hakios_s6e3ha5_pps(w);
+	unsigned n = 0;
+
+	if (pps == NULL) {
 		return false;
 	}
-	for (unsigned k = 0; k < sizeof(vpp1_gates) / sizeof(vpp1_gates[0]); k++) {
-		uint32_t on = rd(cmu, vpp1_gates[k].reg), man = rd(cmu, vpp1_gates[k].reg + 0x1000), b = 1u << vpp1_gates[k].bit;
+	v[n++] = h << 16 | w;
+	v[n++] = h * w;
+	v[n++] = h << 16 | w / 3;
+	v[n++] = h * (w / 3);
+	for (unsigned fifo = 0; fifo < 2; fifo++) {
+		v[n++] = h << 16 | w / 6;
+		v[n++] = h * (w / 6);
+	}
+	v[n++] = h << 16 | w / 3;
+	v[n++] = h * (w / 3);
+	for (unsigned e = 0; e < 2; e++) {
+		for (unsigned b = 4; b < 36; b += 4) {
+			uint32_t word = (uint32_t)pps[b] << 24 | (uint32_t)pps[b + 1] << 16 | (uint32_t)pps[b + 2] << 8 | pps[b + 3];
 
-		if ((man & b) && !(on & b)) {
-			say("exynos8890_decon: CMU_DISP1 +%x bit %u is shut (%x, manual %x): VGR1 not read\n", vpp1_gates[k].reg,
-			    vpp1_gates[k].bit, on, man);
-			return false;
+			v[n++] = b == 8 ? (w / 2) << 16 | (word & 0xffff) : word;       /* (an encoder's picture is half the width) */
 		}
+	}
+	for (unsigned e = 0; e < 2; e++) {
+		v[n++] = h * (w / 2);
+		v[n++] = h * (w / 6);
 	}
 	return true;
 }
 
-/* VGR1 set up to read `pa` (width x height, rowbytes a row) and scale it to the window; then the window moved to it */
-static int
-attach_scaler(uint32_t pa, uint32_t width, uint32_t height, uint32_t rowbytes)
+/*
+ * The DECON (lcd_reg's values `v`), the DSIM and the panel to `w` x `h`, the window to `at` reading `src` x `img` of
+ * `pa`: with the DECON idle after a frame and its trigger masked. True when frames end again afterwards.
+ */
+static bool
+lcd_switch(uint32_t w, uint32_t h, const uint32_t *v, const struct hakios_viewport *at, uint32_t src, uint32_t img,
+    uint32_t pa)
 {
-	vm_offset_t g;
-	uint32_t keep_aspect = 0, errors, before;
-	struct hakios_viewport v = { 0, 0, panel_w, panel_h };
+	uint32_t before = refreshes, under = underruns;
+	bool told;
 
-	if (!vpp1_alive() || (g = ml_io_map(vpp_pa[TYPE_SCALER], 0x1000)) == 0) {
-		return -1;
+	hold = true;
+	for (unsigned ms = 0; ms < 100 && refreshes == before; ms++) {
+		IOSleep(1);
 	}
-
-	PE_parse_boot_argn("fb_aspect", &keep_aspect, sizeof(keep_aspect));
-	if (boot_type == TYPE_SCALER || boot_win_start != 0 || (rowbytes & 3) || rowbytes / 4 < width ||
-	    width < 16 || height < 16 || width > 2 * panel_w || height > 2 * panel_h || panel_w > 8 * width ||
-	    panel_h > 8 * height || (pa & 0xff) || (keep_aspect && !hakios_viewport_fit(width, height, panel_w, panel_h, &v))) {
-		say("exynos8890_decon: VGR1 cannot take %ux%u (%u bytes a row) at %08x to %ux%u (boot window from %x)\n", width,
-		    height, rowbytes, pa, panel_w, panel_h, boot_win_start);
-		return -1;
+	/* (a frame ended and the watcher did not unmask: the auto mask holds, and is not to be read; masked by hand too) */
+	wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) | TRIG_HW_MASK);
+	if (refreshes == before || (rd(vpp, VG_ENABLE) & VG_OP_STATUS)) {
+		/* (written all the same: this is also the way back from a switch after which frames stopped) */
+		say("exynos8890_decon: %ux%u: no frame ended in 100 ms, or %s is busy (%x)\n", w, h, type_name[boot_type],
+		    rd(vpp, VG_ENABLE));
 	}
-	for (unsigned w = 0; w < WINDOWS; w++) {
-		uint32_t c = rd(decon, WIN_CONTROL(w));
+	for (unsigned k = 0; k < LCD_REGS; k++) {
+		wr(decon, lcd_reg[k], v[k]);
+	}
+	/* (the panel told only when the size it takes changes) */
+	told = (w == lcd_w && h == lcd_h) || hakios_s6e3ha5_resolution(w);
+	if (told) {
+		lcd_w = w;
+		lcd_h = h;
+	}
+	wr(vpp, VG_SRC_SIZE, src);
+	wr(vpp, VG_IMG_SIZE, img);
+	/* (the two that follow the picture's size only where S-Boot had them follow it) */
+	if (boot_scaled == boot_img) {
+		wr(vpp, VG_SCALED_SIZE, img);
+	}
+	if (boot_pixels == panel_w * panel_h) {
+		wr(vpp, VG_SMART_IF_PIXELS, at->width * at->height);
+	}
+	point(pa);              /* (the sizes are taken with the address, at the block's next frame: Samsung's vpp_set_config) */
+	wr(decon, WIN_START(win), at->y << 16 | at->x);
+	wr(decon, WIN_END(win), (at->y + at->height - 1) << 16 | (at->x + at->width - 1));
+	wr(decon, WIN_PIXEL_COUNT(win), at->width * at->height);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	wr(decon, SHADOW_REQ, rd(decon, SHADOW_REQ) | SHADOW_GLOBAL | SHADOW_WIN(win));
+	before = refreshes;
+	hold = false;
+	wr(decon, TRIG_CONTROL, (rd(decon, TRIG_CONTROL) & ~TRIG_HW_MASK) | TRIG_AUTO_MASK);
+	for (unsigned ms = 0; ms < 300 && refreshes - before < 3; ms++) {
+		IOSleep(1);
+	}
+	say("exynos8890_decon: %ux%u, the window %ux%u at %u,%u: the panel %s; %u frames ended since, %u underruns; shadow "
+	    "request %x\n", w, h, at->width, at->height, at->x, at->y, told ? "told" : "NOT told", refreshes - before,
+	    underruns - under, rd(decon, SHADOW_REQ));
+	dump_vpp(type_name[boot_type], vpp);
+	return told && refreshes - before >= 3 && underruns == under;
+}
 
-		if ((c & WIN_EN) && WIN_CHMAP(c) == CHANNEL_SCALER) {
-			say("exynos8890_decon: VGR1 is window %u's already: not taken\n", w);
-			return -1;
+/* the DECON's, the first encoder's, the DSIM's and the channel's registers as they are, for a switch that goes wrong */
+static void
+dump(const char *when)
+{
+	static vm_offset_t dsim;
+	const struct { const char *name; vm_offset_t base; uint32_t from, to; } blocks[] = {
+		{ "DECON", decon, 0x000, 0x0B0 }, { "DECON", decon, 0x200, 0x260 }, { "DSC0", decon + DSC(0), 0x00, 0x20 },
+		{ "DSC1", decon + DSC(1), 0x00, 0x20 },
+		{ "DSIM", dsim != 0 ? dsim : (dsim = ml_io_map(0x13900000UL, 0x1000)), 0x00, 0xC0 }, { "VPP", vpp, 0x00, 0x30 },
+	};
+
+	for (unsigned b = 0; b < sizeof(blocks) / sizeof(blocks[0]); b++) {
+		for (uint32_t off = blocks[b].from; blocks[b].base != 0 && off < blocks[b].to; off += 0x20) {
+			const volatile uint32_t *r = (const volatile uint32_t *)(blocks[b].base + off);
+
+			say("exynos8890_decon: %s: %s +%03x: %08x %08x %08x %08x %08x %08x %08x %08x\n", when, blocks[b].name, off, r[0],
+			    r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 		}
 	}
-	if (rd(g, VG_ENABLE) & VG_OP_STATUS) {
-		say("exynos8890_decon: VGR1 is busy: not taken\n");
+}
+
+/* mode 2: the DECON sends 1080 x 1920 and the panel enlarges it; the picture, not scaled, in the middle */
+static int
+attach_panel_scaler(uint32_t pa, uint32_t width, uint32_t height, uint32_t rowbytes)
+{
+	const struct hakios_viewport full = { 0, 0, panel_w, panel_h };
+	uint32_t expected[LCD_REGS], fhd[LCD_REGS];
+	bool as_expected = true;
+
+	if (width > 1080 || height > 1920 || (rowbytes & 3) || rowbytes / 4 < width || rowbytes / 4 > 0x1fff ||
+	    panel_w != 1440 || panel_h != 2560 || !lcd_values(panel_w, panel_h, expected) || !lcd_values(1080, 1920, fhd)) {
+		say("exynos8890_decon: the panel's scaler cannot take %ux%u (%u bytes a row) on %ux%u, or no panel driver "
+		    "(panel=1)\n", width, height, rowbytes, panel_w, panel_h);
 		return -1;
 	}
-	dump_vpp("VGR1 before", g);
-	/* G1's format, alpha and bus settings; our buffer, sizes and scaler */
-	wr(g, VG_IN_CON, rd(boot_vpp, VG_IN_CON));
-	wr(g, VG_OUT_CON, rd(boot_vpp, VG_OUT_CON));
-	wr(g, VG_QOS_LUT_LO, rd(boot_vpp, VG_QOS_LUT_LO));
-	wr(g, VG_QOS_LUT_HI, rd(boot_vpp, VG_QOS_LUT_HI));
-	wr(g, VG_DEADLOCK_NUM, rd(boot_vpp, VG_DEADLOCK_NUM));
-	wr(g, VG_GATING, rd(boot_vpp, VG_GATING));
-	wr(g, VG_SRC_SIZE, height << 16 | (rowbytes / 4));
-	wr(g, VG_SRC_OFFSET, 0);
-	wr(g, VG_IMG_SIZE, height << 16 | width);
-	wr(g, VG_SCALED_SIZE, v.height << 16 | v.width);
-	wr(g, VG_SMART_IF_PIXELS, v.width * v.height);
-	setup_scaler(g, width, height, v.width, v.height);
-	wr(g, VG_IRQ, rd(g, VG_IRQ));                           /* (old status bits cleared: write one to clear) */
-	wr(g, VG_BASE_Y, pa);
-	wr(g, VG_BASE_CB, pa);
-	__asm__ volatile ("dsb sy" ::: "memory");
-	wr(g, VG_ENABLE, rd(g, VG_ENABLE) | VG_SFR_UPDATE_FORCE);  /* idle: its registers taken now */
-	dump_vpp("VGR1 set up", g);
-	for (unsigned ms = 0; ms < 100 && (rd(decon, SHADOW_REQ) & (SHADOW_GLOBAL | SHADOW_WIN(win))); ms++) {
-		IOSleep(1);
+	for (unsigned k = 0; k < LCD_REGS; k++) {
+		/*
+		 * (but for the decoder's initial delay, bytes 18-19, which an encoder does not use: S-Boot leaves 0x1b4, worked
+		 * out from half a slice, where Samsung's kernel writes the table's 0x268)
+		 */
+		uint32_t mask = (lcd_reg[k] & 0xfff) == DSC_PPS(16) ? 0xffff0000u : ~0u;
+
+		lcd_boot[k] = rd(decon, lcd_reg[k]);
+		if ((lcd_boot[k] & mask) != (expected[k] & mask)) {
+			say("exynos8890_decon: +%#x holds %#x, not Samsung's %#x for %ux%u%s\n", lcd_reg[k], lcd_boot[k], expected[k],
+			    panel_w, panel_h, k < LCD_REGS_SURE ? "" : ": left as it is");
+			as_expected = as_expected && k >= LCD_REGS_SURE;
+			fhd[k] = lcd_boot[k];
+		}
 	}
-	/* the window to VGR1, at the viewport; outside it the background, black */
-	vpp = g;
-	flipped = pa;
+	dump_vpp(type_name[boot_type], vpp);
+	if (rd(decon, WIN_PIXEL_COUNT(win)) != panel_w * panel_h) {
+		say("exynos8890_decon: window %u's pixel count is %#x, not its size's\n", win, rd(decon, WIN_PIXEL_COUNT(win)));
+		as_expected = false;
+	}
+	if (!as_expected) {
+		say("exynos8890_decon: the DECON's sizes are not as worked out: left alone\n");
+		return -1;
+	}
+	window = (struct hakios_viewport){ (1080 - width) / 2, (1920 - height) / 2, width, height };
+	if (!lcd_switch(1080, 1920, fhd, &window, height << 16 | rowbytes / 4, height << 16 | width, pa)) {
+		dump("stopped");
+		(void)lcd_switch(panel_w, panel_h, lcd_boot, &full, boot_src, boot_img, boot_base);
+		dump("back");
+		return -1;
+	}
 	mode = 2;
-	if (keep_aspect) {
-		active_viewport = v;
-		aspect_active = true;
-	}
-	wr(decon, BLENDER_BG_COLOR, 0);
-	wr(decon, WIN_START(win), v.y << 16 | v.x);
-	wr(decon, WIN_END(win), (v.y + v.height - 1) << 16 | (v.x + v.width - 1));
-	wr(decon, INTERRUPT_PENDING, INT_RESOURCE_CONFLICT);
-	wr(decon, WIN_CONTROL(win), (boot_ctl & ~WIN_CHMAP_MASK) | (uint32_t)CHANNEL_SCALER << 12);
-	__asm__ volatile ("dsb sy" ::: "memory");
-	before = refreshes;
-	wr(decon, SHADOW_REQ, rd(decon, SHADOW_REQ) | SHADOW_GLOBAL | SHADOW_WIN(win));
-	say("exynos8890_decon: window %u to VGR1 (channel %u) at %u,%u, %ux%u on %ux%u\n", win, CHANNEL_SCALER, v.x, v.y, v.width,
-	    v.height, panel_w, panel_h);
-	for (unsigned ms = 0; ms < 200 && (rd(decon, SHADOW_REQ) & (SHADOW_GLOBAL | SHADOW_WIN(win))); ms++) {
-		IOSleep(1);
-	}
-	if (rd(decon, SHADOW_REQ) & (SHADOW_GLOBAL | SHADOW_WIN(win))) {
-		hakios_scanout_detach("the DECON did not take the window's new channel in 200 ms");
-		return -1;
-	}
-	for (unsigned ms = 0; ms < 200 && refreshes - before < 3; ms++) {
-		IOSleep(1);
-	}
-	errors = rd(g, VG_IRQ) & VG_IRQ_ERRORS;
-	dump_vpp("VGR1 after the switch", g);
-	say("exynos8890_decon: VGR1 after %u refreshes: error status %x, the DECON's resource conflict %s\n",
-	    refreshes - before, errors, (rd(decon, INTERRUPT_PENDING) & INT_RESOURCE_CONFLICT) ? "SET" : "clear");
-	if (errors || refreshes - before < 3 || (rd(decon, INTERRUPT_PENDING) & INT_RESOURCE_CONFLICT)) {
-		hakios_scanout_detach(errors ? "VGR1 reports errors" : refreshes - before < 3 ? "no refreshes after the switch" :
-		    "a resource conflict");
-		return -1;
-	}
 	return 0;
 }
 
@@ -694,7 +704,8 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
     unsigned shown)
 {
 	say("exynos8890_decon: attach: %s asked for, %u buffers of %ux%u (%u bytes a row), %u drawn\n",
-	    want == 1 ? "flips (fb_flip)" : want == 2 ? "the scaler (fb_dpp)" : "nothing", count, width, height, rowbytes, shown);
+	    want == 1 ? "flips (fb_flip)" : want == 2 ? "the panel's scaler (fb_dpp)" : "nothing", count, width, height, rowbytes,
+	    shown);
 	if (probed <= 0 || mode != 0 || count < 2 || count > 4 || shown >= count || (want != 1 && want != 2) ||
 	    (want == 1 && (width != (rd(vpp, VG_IMG_SIZE) & 0x1fff) || rowbytes != (rd(vpp, VG_SRC_SIZE) & 0x1fff) * 4))) {
 		say("exynos8890_decon: attach: refused (probe %d, mode %d, buffers %u, drawn %u, %u wide, %u a row)\n", probed,
@@ -710,12 +721,13 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
 	}
 	nbuffers = count;
 	if (want == 2) {
-		if (attach_scaler((uint32_t)phys[shown], width, height, rowbytes) != 0) {
+		if (attach_panel_scaler((uint32_t)phys[shown], width, height, rowbytes) != 0) {
 			nbuffers = 0;
-			say("exynos8890_decon: attach: VGR1's scaler not taken: the boot window and buffer stay\n");
+			say("exynos8890_decon: attach: the panel's scaler not taken: the boot window and buffer stay\n");
 			return -1;
 		}
-		say("exynos8890_decon: VGR1 scales %ux%u to the window; flips between %u buffers\n", width, height, count);
+		say("exynos8890_decon: the panel enlarges 1080x1920, %ux%u in its middle; flips between %u buffers\n", width, height,
+		    count);
 		return 0;
 	}
 	mode = 1;
@@ -757,12 +769,9 @@ hakios_scanout_detach(const char *why)
 	}
 	say("exynos8890_decon: back to the boot window and buffer (%s)\n", why);
 	if (mode == 2) {
-		aspect_active = false;
-		vpp = boot_vpp;
-		wr(decon, WIN_START(win), boot_win_start);
-		wr(decon, WIN_END(win), boot_win_end);
-		wr(decon, BLENDER_BG_COLOR, boot_bg);
-		wr(decon, WIN_CONTROL(win), boot_ctl);
+		const struct hakios_viewport full = { 0, 0, panel_w, panel_h };
+
+		(void)lcd_switch(panel_w, panel_h, lcd_boot, &full, boot_src, boot_img, boot_base);
 	}
 	point(boot_base);
 	wr(decon, SHADOW_REQ, rd(decon, SHADOW_REQ) | SHADOW_GLOBAL | SHADOW_WIN(win));
@@ -776,12 +785,12 @@ hakios_scanout_detach(const char *why)
 int
 hakios_scanout_viewport(struct hakios_viewport *v, uint32_t *pw, uint32_t *ph)
 {
-	if (!aspect_active) {
+	if (mode != 2) {
 		return 0;
 	}
-	*v = active_viewport;
-	*pw = panel_w;
-	*ph = panel_h;
+	*v = window;
+	*pw = lcd_w;
+	*ph = lcd_h;
 	return 1;
 }
 
