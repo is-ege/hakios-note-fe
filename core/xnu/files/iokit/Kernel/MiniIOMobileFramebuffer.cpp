@@ -697,6 +697,13 @@ public:
 	uint64_t        fScanPhys[SCAN_BUFFERS];
 	IOMemoryDescriptor * fScanMemory[SCAN_BUFFERS];  /* (IOKit's buffers, or the DPU driver's memory described) */
 	IOMemoryMap *   fScanMap[SCAN_BUFFERS];
+	/*
+	 * What each row of a buffer was scaled from (drawRows: the source rows' pixels, their weight, the layer's place),
+	 * 0 when not known: a row asked for again from the same is left alone. A still frame filtered cost 50 ms of the
+	 * processors at 1035 x 1840 (Note FE, 11 November), ten times a second under the home screen's clock.
+	 */
+	uint64_t *      fScanSig[SCAN_BUFFERS];
+	uint64_t *      fSig;                   /* fBase's, NULL for the boot framebuffer */
 	uint8_t *       fBootBase;              /* the boot framebuffer, as it was before fBase pointed elsewhere */
 	uint32_t        fScanWidth, fScanHeight, fScanRowBytes;
 	uint32_t        fBootWidth, fBootHeight, fBootRowBytes;
@@ -1235,6 +1242,23 @@ sample_at(int64_t i, int64_t in, int64_t out)
 /* A layer's rectangle on the panel, in pixels, further out than this is not drawn (the panel is a few thousand wide). */
 #define DST_LIMIT       (1 << 24)
 
+/* A row of pixels as one number (fScanSig): a row that differs in one place never gives the same. */
+static inline uint64_t
+rowHash(const uint32_t * p, uint32_t n)
+{
+	uint64_t a = 0x9E3779B97F4A7C15ull, b = 0xC2B2AE3D27D4EB4Full;
+	uint32_t i = 0;
+
+	for (; i + 4 <= n; i += 4) {
+		a = (a ^ (p[i] | (uint64_t) p[i + 1] << 32)) * 0xFF51AFD7ED558CCDull;
+		b = (b ^ (p[i + 2] | (uint64_t) p[i + 3] << 32)) * 0xC4CEB9FE1A85EC53ull;
+	}
+	for (; i < n; i++) {
+		a = (a ^ p[i]) * 0xFF51AFD7ED558CCDull;
+	}
+	return a ^ (b << 35 | b >> 29);
+}
+
 struct RowJob {
 	const uint8_t * pixels;
 	uint32_t        stride;
@@ -1253,15 +1277,25 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
 	int32_t px0 = job->px0, py0 = job->py0, px1 = job->px1, py1 = job->py1, cx0 = job->cx0, cx1 = job->cx1;
 	bool filter = job->filter;
 	uint32_t dx0 = ~0u, dy0 = ~0u, dx1 = 0, dy1 = 0;        /* what this share changed */
+	uint64_t * sigs = fShadow == NULL && !fDiff ? fSig : NULL;
+	const uint32_t place[] = { (uint32_t) sx, (uint32_t) sy, (uint32_t) sw, (uint32_t) sh, (uint32_t) px0, (uint32_t) py0,
+		                   (uint32_t) px1, (uint32_t) py1, (uint32_t) cx0, (uint32_t) cx1 };
+	uint64_t placed = rowHash(place, sizeof(place) / sizeof(place[0])), hashed[2] = { 0, 0 };
+	uint32_t hashedRow[2] = { ~0u, ~0u };           /* the last source rows hashed, an even and an odd one */
 
 	for (int32_t y = y0; y < y1; y++) {
 		const uint32_t * from;
 		uint32_t * to;
+		uint64_t was = 0;
 
 		if (y < 0 || (uint32_t) y >= fPanelHeight) {
 			continue;
 		}
 		to = (uint32_t *) (fBase + (size_t) y * fRowBytes);
+		if (sigs != NULL) {
+			was = sigs[y];
+			sigs[y] = 0;            /* (the filtered path below says what it drew; the others do not) */
+		}
 		if (fShadow != NULL && job->unscaled) {
 			/* the changed span of the row, by the shadow; only that goes to the panel */
 			const uint32_t * row = (const uint32_t *) (pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4);
@@ -1297,6 +1331,22 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
 			uint32_t row = (uint32_t) (at >> 8), weight = (uint32_t) (at & 255);
 			const uint32_t * upper = (const uint32_t *) (pixels + (size_t) (sy + row) * stride) + sx;
 
+			if (sigs != NULL) {
+				uint32_t last = weight == 0 || row + 1 >= (uint32_t) sh ? row : row + 1;
+				uint64_t sig = placed ^ weight;
+
+				for (uint32_t r = row; r <= last; r++) {
+					if (hashedRow[r & 1] != r) {
+						hashedRow[r & 1] = r;
+						hashed[r & 1] = rowHash((const uint32_t *) (pixels + (size_t) (sy + r) * stride) + sx, (uint32_t) sw);
+					}
+					sig = (sig ^ hashed[r & 1]) * 0x9E3779B97F4A7C15ull;
+				}
+				sigs[y] = sig | 1;
+				if (sigs[y] == was) {
+					continue;
+				}
+			}
 			if (weight == 0 || row + 1 >= (uint32_t) sh) {
 				from = upper;
 			} else {
@@ -2119,6 +2169,9 @@ IOMobileFramebuffer::scanSetup(void)
 	fScanWidth = width;
 	fScanHeight = height;
 	fScanRowBytes = rowbytes;
+	for (i = 0; i < SCAN_BUFFERS; i++) {
+		fScanSig[i] = IONewZero(uint64_t, height);
+	}
 	scanSay("MiniIOMobileFramebuffer: %s: %u buffers of %ux%u, %u bytes a row, at %#llx %#llx %#llx (%s); taken at the "
 	    "first frame drawn\n", name, SCAN_BUFFERS, width, height, rowbytes, fScanPhys[0], fScanPhys[1], fScanPhys[2],
 	    carve ? "the DPU driver's, below 4 GB" : "IOKit's");
@@ -2157,6 +2210,7 @@ IOMobileFramebuffer::scanBegin(bool covered)
 		    fScanPhys[t], fScanWidth, fScanHeight, covered ? "" : ", what is shown copied in first", fScanMode);
 	}
 	fBase = fScanBase[t];
+	fSig = fScanSig[t];
 	/* (fb_dpp: what is drawn is the display's own size, one pixel for one: the DPU enlarges it) */
 	fPanelWidth = fScanWidth;
 	fPanelHeight = fScanHeight;
@@ -2166,6 +2220,9 @@ IOMobileFramebuffer::scanBegin(bool covered)
 		MiniIOSurface * shown = fZcPending != NULL ? fZcPending : fScanPending == NO_BUFFER ? fZcFront : NULL;
 
 		fFpsPartial++;
+		if (fSig != NULL) {
+			bzero(fSig, (size_t) fPanelHeight * sizeof(fSig[0]));
+		}
 		for (uint32_t y = 0; y < fPanelHeight; y++) {
 			uint8_t * to = fBase + (size_t) y * fRowBytes;
 
@@ -2396,6 +2453,7 @@ IOMobileFramebuffer::scanDrop(const char * why)
 	}
 	fScanMode = 0;
 	fBase = fBootBase;
+	fSig = NULL;
 	fPanelWidth = fBootWidth;
 	fPanelHeight = fBootHeight;
 	fRowBytes = fBootRowBytes;
@@ -2733,6 +2791,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 			if (layer == 0 && (set & 1) && fGraphics) {
 				for (uint32_t y = 0; y < fPanelHeight; y++) {
 					bzero(fBase + (size_t) y * fRowBytes, (size_t) fPanelWidth * 4);
+				}
+				if (fSig != NULL) {
+					bzero(fSig, (size_t) fPanelHeight * sizeof(fSig[0]));
 				}
 				if (fShadow != NULL) {
 					bzero(fShadow, (size_t) fPanelWidth * fPanelHeight * 4);
