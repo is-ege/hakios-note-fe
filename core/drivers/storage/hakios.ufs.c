@@ -1325,11 +1325,11 @@ hakios_var_save_on_return(void)
 	 * into the flash before the run hands back, as a shutdown's sync would -- bounded by the kernel's own
 	 * sync_timeout_seconds, and whatever it did not reach the journal makes whole at the next mount.
 	 */
-	if (ufs_ready && ufs_write_part >= 0 && ufs_data_used) {
+	if (ufs_ready && ufs_data_part() >= 0 && ufs_data_used) {
 		int e;
 
 		printf("ufs: the run is ending: the file systems synced, the data volume's last writes into %s\n",
-		    (const char *)ufs_page->part[ufs_write_part].name);
+		    (const char *)ufs_page->part[ufs_data_part()].name);
 		e = sync_internal();
 		printf("ufs: synced (%d); %llu writes, %llu MB this run\n", e, ufs_writes, ufs_write_bytes >> 20);
 	}
