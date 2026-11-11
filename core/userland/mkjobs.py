@@ -228,7 +228,23 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'soft
         'homed', 'routined', 'duetexpertd', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced',
         # started by the Phone app; without CommCenter it retries the lookup without a pause: a whole core, and a
         # quarter of another in launchd, until the run ends (Note FE, 11 November 2026, seen with the console's top)
-        'voicemail.vmd')
+        'voicemail.vmd',
+        # features this phone can never have (Ege, 11 November 2026: phone, messages and Siri stay). 146 s after boot
+        # (console top all): 138 -> 102 processes, 159 -> 134 s of processor time, 505 -> 405 MB; at idle they were
+        # 0.3% of a core.
+        # The App Store, Apple's media, ads and Game Center: no storefront without CommCenter or an account (above)
+        'appstored', 'itunesstored', 'amsengagementd', 'amsaccountsd', 'itunescloudd', 'promotedcontentd',
+        'com.apple.adid', 'gamed', 'ScreenTimeAgent', 'familycircled',
+        # iCloud and the Apple ID
+        'cloudd', 'com.apple.akd', 'cdpd', 'cloudkeychainproxy', 'SafariBookmarksSyncAgent', 'ckdiscretionaryd',
+        'followupd', 'SecureBackupDaemon', 'networkserviceproxy', 'AppSSODaemon',
+        # AirDrop, Continuity, Find My, SharePlay: no Bluetooth or AWDL here. (Not nanoregistryd, the Watch's
+        # registry: without it SpringBoard stops after its first frame, no PosterBoard and no home screen.)
+        'sharingd', 'rapportd', 'nearbyd', 'fmfd', 'useractivityd', 'sociallayerd',
+        # Apple's analytics, experiments and diagnostics
+        'analyticsd', 'awdd', 'rtcreportingd', 'symptomsd', 'OTATaskingAgent', 'mobilerepaird', 'triald',
+        # Spotlight's online suggestions, Maps' tiles and pushes, Wallet's IDs (no Secure Enclave)
+        'parsec', 'geod', 'Maps.pushdaemon', 'coreidvd')
 
 # ALLOW="word ..." in the environment lets jobs through that DENY would stop: for trying one out
 DENY = tuple(word for word in DENY if word not in os.environ.get('ALLOW', '').split())
