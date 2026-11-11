@@ -7,7 +7,7 @@
  * panel's MTP, the AOR (B1: how many of a frame's 2584 lines the pixels are dark), ELVSS, VINT and IRC, taken by
  * F7 03 and F7 00. This sends the AOR alone, between the level-2 key:
  *   F0 5A 5A, B1 hi lo, F7 03, F7 00, F0 A5 A5
- * from S-Boot's own AOR (read at start: level 255) to Samsung's dimmest (0x9E2: level 0), the lit lines by the
+ * from S-Boot's own AOR (hakios_s6e3ha5_boot_reads: level 255) to Samsung's dimmest (0x9E2: level 0), the lit lines by the
  * square of the level. So the panel goes from S-Boot's brightness down, never above it. Samsung's AOR table is not
  * used: each of its values goes with the gamma of its step, and alone they are not in order.
  * B1's two bytes: the AOR's bits 11-8 in the first's high half, bits 7-0 the second (0x9E2: 90 E2).
@@ -206,33 +206,48 @@ SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFL
     NULL, 0,
     panel_sysctl_brightness, "I", "the panel's brightness, 0-255 (-1: never set); writing sets it (Galaxy Note FE, panel=1)");
 
-static void
-s6e3ha5_run(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
+/*
+ * The panel's ID and S-Boot's AOR, for the DECON's driver to call while no frame is sent: a read turns the link round to
+ * the panel, and one that meets a frame times out and leaves the panel taking no command after it (11 November: the
+ * switch to 1080 x 1920 then not shown, though sent).
+ */
+void
+hakios_s6e3ha5_boot_reads(void)
 {
 	static const uint8_t key_on[] = { 0xF0, 0x5A, 0x5A }, key_off[] = { 0xF0, 0xA5, 0xA5 };
 	uint8_t id[3] = { 0 }, aor[2] = { 0 };
 	uint32_t level = 0;
 	bool have_id, have_aor;
 
-	panel_lock = lck_mtx_alloc_init(lck_grp_alloc_init("s6e3ha5", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
-	dsim = ml_io_map(dsim_soc.pa, 0x1000);
 	if (dsim == 0) {
-		say("s6e3ha5: cannot map the DSIM at 0x%llx\n", dsim_soc.pa);
 		return;
 	}
+	lck_mtx_lock(panel_lock);
 	have_id = dsim_read(REG_ID, id, sizeof(id));
 	have_aor = dsim_send(key_on, sizeof(key_on)) && dsim_read(REG_AOR, aor, sizeof(aor));
 	(void)dsim_send(key_off, sizeof(key_off));
+	lck_mtx_unlock(panel_lock);
 	if (have_aor && ((uint32_t)(aor[0] >> 4) << 8 | aor[1]) < AOR_DIMMEST) {
 		aor_boot = (uint32_t)(aor[0] >> 4) << 8 | aor[1];
 	}
 	say("s6e3ha5: DSIM0: FIFOCTRL %x, INTSRC %x; the panel's ID %02x %02x %02x%s; S-Boot's AOR (B1) %02x %02x%s: level 255 "
 	    "is AOR 0x%03x, level 0 0x%03x; kern.hakios.brightness sets it\n", rd(DSIM_FIFOCTRL), rd(DSIM_INTSRC), id[0], id[1],
 	    id[2], have_id ? "" : " (NOT READ)", aor[0], aor[1], have_aor ? "" : " (NOT READ)", aor_boot, AOR_DIMMEST);
-	(void)hakios_panel_register("s6e3ha5", panel_set);
 	if (PE_parse_boot_argn("panel_brightness", &level, sizeof(level))) {
 		(void)panel_set((int)level);
 	}
+}
+
+static void
+s6e3ha5_run(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
+{
+	panel_lock = lck_mtx_alloc_init(lck_grp_alloc_init("s6e3ha5", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
+	dsim = ml_io_map(dsim_soc.pa, 0x1000);
+	if (dsim == 0) {
+		say("s6e3ha5: cannot map the DSIM at 0x%llx\n", dsim_soc.pa);
+		return;
+	}
+	(void)hakios_panel_register("s6e3ha5", panel_set);
 }
 
 __startup_func

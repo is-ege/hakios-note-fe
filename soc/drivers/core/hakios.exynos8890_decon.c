@@ -209,6 +209,11 @@ static vm_offset_t cmu_top, cmu_disp0;
 static int vclk;                        /* 0 S-Boot's, 1 asked for, 2 at 42 MHz, 3 kept, -1 refused or put back */
 static uint32_t vclk_was[4];            /* S-Boot's TOP divider, TOP gate, DISP0 user mux, DISP0 mux */
 
+/* drivers/gpu/hakios.s6e3ha5.c: its reads, the DSC picture parameters the panel takes at a width, the DSIM and panel told */
+extern void hakios_s6e3ha5_boot_reads(void);
+extern const uint8_t *hakios_s6e3ha5_pps(uint32_t width);
+extern bool hakios_s6e3ha5_resolution(uint32_t width);
+
 extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation, void *parameter, integer_t priority,
     thread_t *new_thread);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -484,6 +489,14 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 		wr(decon, INTERRUPT_ENABLE, ie | INT_FRAME_DONE | INT_FIFO_LEVEL | INT_EN);
 		say("exynos8890_decon: interrupt enable %x -> %x (watched, not taken), pending %x, underrun threshold %x\n", ie,
 		    rd(decon, INTERRUPT_ENABLE), rd(decon, INTERRUPT_PENDING), rd(decon, UNDER_RUN_THRESHOLD));
+		/* the panel's reads between two frames, the trigger masked (hakios_s6e3ha5_boot_reads: a frame is 24 ms here) */
+		wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) | TRIG_HW_MASK);
+		wr(decon, INTERRUPT_PENDING, INT_FRAME_DONE);
+		for (unsigned ms = 0; ms < 30 && !(rd(decon, INTERRUPT_PENDING) & INT_FRAME_DONE); ms++) {
+			IOSleep(1);
+		}
+		hakios_s6e3ha5_boot_reads();
+		wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) & ~TRIG_HW_MASK);
 		/* (the watcher unmasks the trigger after every frame: auto mask only once it runs) */
 		if (kernel_thread_start_priority((thread_continue_t)watch, NULL, 80, &thread) == KERN_SUCCESS) {
 			thread_deallocate(thread);
@@ -522,9 +535,6 @@ dump_vpp(const char *what, vm_offset_t g)
 	    rd(g, VG_V_RATIO), rd(g, VG_BASE_Y), rd(g, VG_SHA_BASE_Y), rd(g, VG_PINGPONG), rd(g, VG_SMART_IF_PIXELS));
 }
 
-/* drivers/gpu/hakios.s6e3ha5.c: the DSC picture parameters the panel takes at a width, and the DSIM and panel told */
-extern const uint8_t *hakios_s6e3ha5_pps(uint32_t width);
-extern bool hakios_s6e3ha5_resolution(uint32_t width);
 
 /* what a resolution sets, in Samsung's arithmetic (two encoders, a slice each, compressed to a third) */
 static const uint32_t lcd_reg[LCD_REGS] = {
