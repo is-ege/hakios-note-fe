@@ -21,6 +21,9 @@
  * for 1440 x 2560: a DECON that S-Boot set up otherwise is left alone. If no frame ends afterwards, everything goes
  * back. (The DECON's own scalers, VGR0 and VGR1, need a call into the secure world that Samsung's kernel makes and
  * this one does not; the code that tried VGR1 is in this file's history.)
+ * With fb_zc (mode 2 only), G1 reads the window server's display surface itself instead of a copy of it: the surface is
+ * made of the scan-out range left above the buffers (hakios_scanout_carve), and shown with its own row length
+ * (hakios_scanout_show). The copy was 12% of a core at idle (10 frames a second, 11 November).
  *
  * The panel's TE reaches the DECON through pin gpb0-1 (PERIC0, 0x136D00E0) in its function 2 (Samsung's pinctrl state
  * decon_te_on, the tree's decon_f_te_on). With the pin left an input, the DECON is never held back for a TE: measured on
@@ -203,6 +206,12 @@ static uint32_t lcd_boot[LCD_REGS];      /* lcd_reg's values as S-Boot left them
 static bool hold;                       /* the watcher leaves the trigger masked at a frame's end */
 static uint64_t buffers[4];
 static unsigned nbuffers;
+static uint32_t scan_rowbytes, shown_rowbytes;  /* mode 2: the buffers' row, and the row of what G1 reads now */
+/* fb_zc's pool: 8 MB slots (a 1035 x 1840 surface is 7.7) in the scan-out range above the buffers given out */
+#define POOL_SLOT               (8ULL << 20)
+static uint64_t pool_pa;                /* 0 until hakios_scanout_memory */
+static unsigned pool_slots;
+static uint32_t pool_used;              /* a bit for every slot given out */
 static uint32_t flipped;                /* the address last asked for */
 static uint32_t refreshes, underruns, starts;
 static vm_offset_t cmu_top, cmu_disp0;
@@ -522,7 +531,11 @@ hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
 	for (unsigned k = 0; k < count; k++) {
 		phys[k] = EXYNOS8890_MEM_DPU_SCAN_PA + step * k;
 	}
-	say("exynos8890_decon: memory: %u buffers of %llu bytes from %#llx\n", count, bytes, EXYNOS8890_MEM_DPU_SCAN_PA);
+	pool_pa = EXYNOS8890_MEM_DPU_SCAN_PA + step * count;
+	pool_slots = (unsigned)((EXYNOS8890_MEM_DPU_SCAN_END - pool_pa) / POOL_SLOT);
+	pool_slots = pool_slots > 32 ? 32 : pool_slots;
+	say("exynos8890_decon: memory: %u buffers of %llu bytes from %#llx; fb_zc's pool %u slots of 8 MB from %#llx\n", count,
+	    bytes, EXYNOS8890_MEM_DPU_SCAN_PA, pool_slots, pool_pa);
 	return 0;
 }
 
@@ -705,6 +718,7 @@ attach_panel_scaler(uint32_t pa, uint32_t width, uint32_t height, uint32_t rowby
 		dump("back");
 		return -1;
 	}
+	scan_rowbytes = shown_rowbytes = rowbytes;
 	mode = 2;
 	return 0;
 }
@@ -755,6 +769,11 @@ hakios_scanout_flip(unsigned index)
 	if (mode == 0 || index >= nbuffers) {
 		return -1;
 	}
+	if (mode == 2 && shown_rowbytes != scan_rowbytes) {
+		/* (back from a surface of fb_zc's, whose rows may differ; taken with the address) */
+		wr(vpp, VG_SRC_SIZE, (rd(vpp, VG_SRC_SIZE) & 0xffff0000u) | (scan_rowbytes / 4));
+		shown_rowbytes = scan_rowbytes;
+	}
 	point((uint32_t)buffers[index]);
 	return 0;
 }
@@ -804,8 +823,57 @@ hakios_scanout_viewport(struct hakios_viewport *v, uint32_t *pw, uint32_t *ph)
 	return 1;
 }
 
-/* fb_zc's parts: not on this SoC yet */
-int hakios_scanout_carve(__unused uint64_t bytes, __unused uint64_t *phys) { return -1; }
-void hakios_scanout_uncarve(__unused uint64_t phys) {}
-int hakios_scanout_carved(__unused uint64_t phys) { return 0; }
-int hakios_scanout_show(__unused uint64_t phys, __unused uint32_t rowbytes) { return -1; }
+/* fb_zc (MiniIOSurface.cpp): a slot of the pool for a display surface, as hakios.exynos_dpu.c's */
+int
+hakios_scanout_carve(uint64_t bytes, uint64_t *phys)
+{
+	if (probed <= 0 || pool_pa == 0 || bytes == 0 || bytes > POOL_SLOT) {
+		return -1;
+	}
+	for (unsigned k = 0; k < pool_slots; k++) {
+		uint32_t used = __atomic_load_n(&pool_used, __ATOMIC_RELAXED);
+
+		while ((used & (1u << k)) == 0) {
+			if (__atomic_compare_exchange_n(&pool_used, &used, used | (1u << k), 0, __ATOMIC_SEQ_CST,
+			    __ATOMIC_SEQ_CST)) {
+				*phys = pool_pa + POOL_SLOT * k;
+				return 0;
+			}
+		}
+	}
+	return -1;
+}
+
+void
+hakios_scanout_uncarve(uint64_t phys)
+{
+	if (hakios_scanout_carved(phys)) {
+		__atomic_fetch_and(&pool_used, ~(1u << (unsigned)((phys - pool_pa) / POOL_SLOT)), __ATOMIC_SEQ_CST);
+	}
+}
+
+/* (the Mali's tables take the pool's pages, though the kernel does not manage them: drivers/gpu/hakios.mali.c) */
+int
+hakios_scanout_carved(uint64_t phys)
+{
+	return probed > 0 && pool_pa != 0 && phys >= pool_pa && phys < pool_pa + POOL_SLOT * pool_slots;
+}
+
+/*
+ * fb_zc: G1 to read a surface of the pool from its next frame on, `rowbytes` a row (the window's size stays). As
+ * hakios_scanout_flip(): the caller has waited for the flip before to be taken.
+ */
+int
+hakios_scanout_show(uint64_t phys, uint32_t rowbytes)
+{
+	if (mode != 2 || (phys & 0xff) || (rowbytes & 3) || !hakios_scanout_carved(phys) || rowbytes / 4 < window.width ||
+	    rowbytes / 4 > 0x1fff) {
+		return -1;
+	}
+	if (rowbytes != shown_rowbytes) {
+		wr(vpp, VG_SRC_SIZE, (rd(vpp, VG_SRC_SIZE) & 0xffff0000u) | (rowbytes / 4));
+		shown_rowbytes = rowbytes;
+	}
+	point((uint32_t)phys);
+	return 0;
+}
