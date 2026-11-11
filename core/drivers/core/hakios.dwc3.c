@@ -120,6 +120,8 @@
 #include <sys/param.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+#include <sys/proc_internal.h>
+#include <kern/recount.h>
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 #include <console/video_console.h>
@@ -1349,6 +1351,75 @@ console_bl(const char *arg)
 	    "every packet" : errno_name(error), error, t1 / NSEC_PER_USEC, error == ENODEV ? " (panel=1 not given?)" : "");
 }
 
+/* "top": each process's processor time since the last "top" (the first: since boot), the busiest first */
+#define TOP_MAX 512
+#define TOP_SHOWN 16
+static struct top_row {
+	int pid;
+	uint64_t total, spent;          /* ns */
+	char name[MAXCOMLEN + 1];
+} top_now[TOP_MAX], top_before[TOP_MAX];
+static unsigned top_n, top_before_n;
+static uint64_t top_when;
+
+static int
+top_one(proc_t p, __unused void *arg)
+{
+	struct recount_times_mach t;
+	struct top_row *row;
+
+	if (top_n == TOP_MAX || proc_task(p) == TASK_NULL) {
+		return PROC_RETURNED;
+	}
+	row = &top_now[top_n++];
+	t = recount_task_times(proc_task(p));
+	row->pid = proc_getpid(p);
+	absolutetime_to_nanoseconds(t.rtm_user + t.rtm_system, &row->total);
+	strlcpy(row->name, proc_best_name(p), sizeof(row->name));
+	row->spent = row->total;
+	for (unsigned i = 0; i < top_before_n; i++) {
+		if (top_before[i].pid == row->pid && top_before[i].total <= row->total) {
+			row->spent = row->total - top_before[i].total;
+			break;
+		}
+	}
+	return PROC_RETURNED;
+}
+
+static void
+console_top(void)
+{
+	uint64_t now, wall, sum = 0;
+
+	absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+	wall = now - top_when;
+	top_n = 0;
+	proc_iterate(PROC_ALLPROCLIST, top_one, NULL, NULL, NULL);
+	for (unsigned i = 0; i < top_n; i++) {
+		sum += top_now[i].spent;
+	}
+	con("usb: top: %llu.%01llu s, %u processes, %llu ms of processor time (100%% is one core)\n", wall / NSEC_PER_SEC,
+	    (wall / (NSEC_PER_SEC / 10)) % 10, top_n, sum / NSEC_PER_MSEC);
+	memcpy(top_before, top_now, sizeof(top_now[0]) * top_n);
+	top_before_n = top_n;
+	top_when = now;
+	for (unsigned shown = 0; shown < TOP_SHOWN; shown++) {
+		struct top_row *most = NULL;
+
+		for (unsigned i = 0; i < top_n; i++) {
+			if (top_now[i].spent != 0 && (most == NULL || top_now[i].spent > most->spent)) {
+				most = &top_now[i];
+			}
+		}
+		if (most == NULL) {
+			break;
+		}
+		con("usb: top: %5llu.%01llu%% %6llu ms  %s[%d]\n", most->spent * 100 / wall, (most->spent * 1000 / wall) % 10,
+		    most->spent / NSEC_PER_MSEC, most->name, most->pid);
+		most->spent = 0;
+	}
+}
+
 static void
 console(char *line)
 {
@@ -1367,7 +1438,7 @@ console(char *line)
 	if (strcmp(line, "ptouch") != 0)
 		con("usb> %s%s%s\n", line, *arg ? " " : "", arg);
 	if (strcmp(line, "help") == 0) {
-		con("usb: help, stat, uptime, sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
+		con("usb: help, stat, uptime, top (each process's processor time since the last top), sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
 		    "ufs (the storage's ufs=3 summary), "
@@ -1390,6 +1461,8 @@ console(char *line)
 		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
 		    n_events, n_shots);
 		con("usb: %llu partial IN transfers retried; %u bytes pending\n", n_in_partial, in_pending_len - in_pending_done);
+	} else if (strcmp(line, "top") == 0) {
+		console_top();
 	} else if (strcmp(line, "uptime") == 0) {
 		uint64_t ns;
 
