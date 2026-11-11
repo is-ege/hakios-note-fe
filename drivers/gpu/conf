@@ -1,0 +1,7 @@
+# devices/gracerlte/drivers/gpu/conf: the Galaxy Note FE's own display drivers (docs/porting/drivers.md).
+
+driver S6E3HA5
+	file    bsd/dev/hakios.s6e3ha5.c
+	default n
+	help    the Galaxy Note FE's panel brightness through DSIM0's command FIFO: the AOR alone, from S-Boot's level down
+	help    (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start)
