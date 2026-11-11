@@ -168,7 +168,6 @@ static struct hakios_hsi2c bus;
 
 static vm_offset_t irq_bank;
 static uint32_t res_x = 4096, res_y = 4096;
-static bool touch_aspect;
 static uint32_t ldo_cycles = 1;       /* s6sy761_ldo=0: never switch the chip's supplies */
 static struct {
 	uint64_t events, downs;
@@ -288,14 +287,12 @@ finger(uint32_t id, uint32_t state, uint32_t x, uint32_t y)
 	}
 	nx = x >= res_x - 1 ? 65535 : x * 65535 / (res_x - 1);
 	ny = y >= res_y - 1 ? 65535 : y * 65535 / (res_y - 1);
-	if (touch_aspect) {
-		struct hakios_viewport viewport;
-		uint32_t pw, ph;
-		if (hakios_scanout_viewport(&viewport, &pw, &ph)) {
-			/* The chip's coordinate grid need not equal the panel's pixel grid. */
-			nx = hakios_viewport_coordinate((uint32_t)((uint64_t)nx * (pw - 1) / 65535), viewport.x, viewport.width);
-			ny = hakios_viewport_coordinate((uint32_t)((uint64_t)ny * (ph - 1) / 65535), viewport.y, viewport.height);
-		}
+	struct hakios_viewport viewport;
+	uint32_t pw, ph;
+	if (hakios_scanout_viewport(&viewport, &pw, &ph)) {
+		/* The chip's coordinate grid need not equal the panel's pixel grid. */
+		nx = hakios_viewport_coordinate((uint32_t)((uint64_t)nx * (pw - 1) / 65535), viewport.x, viewport.width);
+		ny = hakios_viewport_coordinate((uint32_t)((uint64_t)ny * (ph - 1) / 65535), viewport.y, viewport.height);
 	}
 	stats.events++;
 	if (state == 3) {
@@ -583,12 +580,6 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 		goto out;
 	}
 
-	{
-		uint32_t aspect = 0, dpp = 0;
-		PE_parse_boot_argn("fb_aspect", &aspect, sizeof(aspect));
-		PE_parse_boot_argn("fb_dpp", &dpp, sizeof(dpp));
-		touch_aspect = aspect && dpp;
-	}
 	say("s6sy761: step 6: watching the IRQ pin every %u ms; the coordinates are 0-%u x 0-%u\n", POLL_MS, res_x - 1,
 	    res_y - 1);
 	for (unsigned tick = 1;; tick++) {

@@ -34,6 +34,7 @@ static uint32_t dsim_read_failures;
 #define RX_WORDS        64              /* Samsung's DSIM_RX_FIFO_MAX_DEPTH */
 
 #define DCS_SHORT       0x05
+#define DCS_SHORT_PARAM 0x15
 #define DCS_READ        0x06
 #define MAX_RETURN      0x37            /* set maximum return packet size */
 #define DCS_LONG        0x39
@@ -99,12 +100,15 @@ dsim_packet(uint32_t header, const uint8_t *payload, uint32_t len)
 	return sent;
 }
 
-/* one DCS command: a byte alone short, anything longer long */
+/* one DCS command: one or two bytes short, anything longer long (Samsung's dsim_write_hl_data) */
 static bool
 dsim_send(const uint8_t *data, uint32_t len)
 {
 	if (len == 1) {
 		return dsim_packet(DCS_SHORT | (uint32_t)data[0] << 8, NULL, 0);
+	}
+	if (len == 2) {
+		return dsim_packet(DCS_SHORT_PARAM | (uint32_t)data[0] << 8 | (uint32_t)data[1] << 16, NULL, 0);
 	}
 	return dsim_packet(DCS_LONG | (len & 0xff) << 8 | (len >> 8) << 16, data, len);
 }
