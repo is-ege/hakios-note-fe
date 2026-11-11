@@ -3,7 +3,8 @@
  * hakios.exynos9810_mem.h is for the S9. XNU has the high bank (0x880000000); the flash controller's and the display's DMA
  * take 32-bit addresses, so they get pieces of the lower bank.
  *
- *   0x94000000 - 0x96FFFFFF   the DECON's scan-out buffers: fb_flip's three of the panel's size (hakios.exynos8890_decon.c)
+ *   0x94000000 - 0x96FFFFFF   the DECON's scan-out buffers (fb_flip's or fb_dpp's three), and above them fb_zc's pool
+ *                             (hakios.exynos8890_decon.c)
  *   0xD8000000 - 0xD9067FFF   S-Boot's framebuffer (s3cfb.bootloaderfb=, 1440 x 2560 x 4), inside the tree's camera
  *   0xDEC00000 - 0xDEFFFFFF   UFS's own-mode list, descriptors and buffers (hakios.ufshc.c)
  *   0xE0000000 - 0xE3FFFFFF   the loader's moved payload and the panic log (xnuloader/loader.c, payload_home)

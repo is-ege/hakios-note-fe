@@ -1428,6 +1428,72 @@ console_top(bool all)
 	}
 }
 
+/* "top threads": the kernel task's threads, each one's processor time since the last "top threads" and where it waits */
+extern void hakios_kernel_threads(void (*each)(void *arg, uint64_t id, const char *name, uint64_t time,
+    const uintptr_t *where, unsigned n), void *arg);
+#define KT_MAX 256
+static struct kt_row {
+	uint64_t id, total, spent;      /* mach units */
+	char name[32];
+	uintptr_t where[6];
+	unsigned n;
+} kt_now[KT_MAX], kt_before[KT_MAX];
+static unsigned kt_n, kt_before_n;
+static uint64_t kt_when;
+
+static void
+kt_one(__unused void *arg, uint64_t id, const char *name, uint64_t time, const uintptr_t *where, unsigned n)
+{
+	struct kt_row *row;
+
+	if (kt_n == KT_MAX) {
+		return;
+	}
+	row = &kt_now[kt_n++];
+	row->id = id;
+	row->total = row->spent = time;
+	strlcpy(row->name, name, sizeof(row->name));
+	memcpy(row->where, where, n * sizeof(where[0]));
+	row->n = n;
+	for (unsigned i = 0; i < kt_before_n; i++) {
+		if (kt_before[i].id == id && kt_before[i].total <= time) {
+			row->spent = time - kt_before[i].total;
+			break;
+		}
+	}
+}
+
+static void
+console_top_threads(void)
+{
+	uint64_t now = mach_absolute_time(), wall_ns, ns;
+
+	kt_n = 0;
+	hakios_kernel_threads(kt_one, NULL);
+	absolutetime_to_nanoseconds(now - kt_when, &wall_ns);
+	con("usb: top threads: %llu ms, %u kernel threads\n", wall_ns / NSEC_PER_MSEC, kt_n);
+	memcpy(kt_before, kt_now, sizeof(kt_now[0]) * kt_n);
+	kt_before_n = kt_n;
+	kt_when = now;
+	for (;;) {
+		struct kt_row *most = NULL;
+
+		for (unsigned i = 0; i < kt_n; i++) {
+			if (kt_now[i].spent != 0 && (most == NULL || kt_now[i].spent > most->spent)) {
+				most = &kt_now[i];
+			}
+		}
+		if (most == NULL) {
+			break;
+		}
+		absolutetime_to_nanoseconds(most->spent, &ns);
+		con("usb: top threads: %5llu.%01llu%% %6llu ms  %llu '%s' at %lx %lx %lx %lx %lx %lx\n", ns * 100 / wall_ns,
+		    (ns * 1000 / wall_ns) % 10, ns / NSEC_PER_MSEC, most->id, most->name, most->where[0], most->where[1],
+		    most->where[2], most->where[3], most->where[4], most->where[5]);
+		most->spent = 0;
+	}
+}
+
 static void
 console(char *line)
 {
@@ -1446,7 +1512,7 @@ console(char *line)
 	if (strcmp(line, "ptouch") != 0)
 		con("usb> %s%s%s\n", line, *arg ? " " : "", arg);
 	if (strcmp(line, "help") == 0) {
-		con("usb: help, stat, uptime, top [all] (each process's processor time since the last top, and memory; all: every process), sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
+		con("usb: help, stat, uptime, top [all | threads] (each process's processor time since the last top, and memory; all: every process; threads: the kernel's threads and where they wait), sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
 		    "ufs (the storage's ufs=3 summary), "
@@ -1470,7 +1536,11 @@ console(char *line)
 		    n_events, n_shots);
 		con("usb: %llu partial IN transfers retried; %u bytes pending\n", n_in_partial, in_pending_len - in_pending_done);
 	} else if (strcmp(line, "top") == 0) {
-		console_top(strcmp(arg, "all") == 0);
+		if (strcmp(arg, "threads") == 0) {
+			console_top_threads();
+		} else {
+			console_top(strcmp(arg, "all") == 0);
+		}
 	} else if (strcmp(line, "uptime") == 0) {
 		uint64_t ns;
 

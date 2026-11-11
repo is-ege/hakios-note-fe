@@ -4481,7 +4481,7 @@ index bec97fbf7243..203e1f48783f 100644
  
  #if CONFIG_DTRACE
 diff --git a/osfmk/kern/thread.c b/osfmk/kern/thread.c
-index 384ef23fe0e1..d5ab6db0edbc 100644
+index 384ef23fe0e1..3b36992d7fbd 100644
 --- a/osfmk/kern/thread.c
 +++ b/osfmk/kern/thread.c
 @@ -3065,6 +3065,26 @@ thread_get_tag(thread_t th)
@@ -4511,6 +4511,50 @@ index 384ef23fe0e1..d5ab6db0edbc 100644
  uint64_t
  thread_last_run_time(thread_t th)
  {
+@@ -4252,3 +4272,43 @@ dtrace_thread_didexec(thread_t thread)
+ 	thread->t_dtrace_flags |= TH_DTRACE_EXECSUCCESS;
+ }
+ #endif /* CONFIG_DTRACE */
++
++#if defined(__arm64__)
++/*
++ * HakiOS: each of the kernel task's threads, for the USB console's "top threads": its id, name, processor time
++ * (mach units) and where it waits -- its continuation, or else the first return addresses on its kernel stack
++ * (unslid, for symbols on the Mac). A thread that is running has no saved frame: its `where` is empty. `each` is
++ * called with the task locked: it must only record.
++ */
++void
++hakios_kernel_threads(void (*each)(void *arg, uint64_t id, const char *name, uint64_t time, const uintptr_t *where,
++    unsigned n), void *arg)
++{
++	thread_t th;
++
++	task_lock(kernel_task);
++	queue_iterate(&kernel_task->threads, th, thread_t, task_threads) {
++		char name[MAXTHREADNAMESIZE] = "";
++		uintptr_t where[6] = { 0 };
++		unsigned n = 0;
++
++		thread_get_thread_name(th, name);
++		if (th->continuation != NULL) {
++			where[n++] = VM_KERNEL_UNSLIDE((uintptr_t)th->continuation);
++		} else if (th->kernel_stack != 0 && th->state != TH_RUN) {
++			/* (the thread may wake meanwhile: every frame is checked to lie in its stack before it is read) */
++			uintptr_t lo = th->kernel_stack, hi = th->kernel_stack + kernel_stack_size;
++			uintptr_t fp = thread_get_kernel_state(th)->machine.ss.fp;
++
++			while (n < 6 && fp >= lo && fp + 16 <= hi && (fp & 7) == 0) {
++				uintptr_t lr = (uintptr_t)ptrauth_strip((void *)((uintptr_t *)fp)[1], ptrauth_key_return_address);
++
++				where[n++] = VM_KERNEL_UNSLIDE(lr);
++				fp = ((uintptr_t *)fp)[0];
++			}
++		}
++		each(arg, th->thread_id, name, recount_thread_time_mach(th), where, n);
++	}
++	task_unlock(kernel_task);
++}
++#endif
 diff --git a/osfmk/kern/work_interval.c b/osfmk/kern/work_interval.c
 index f2b9ce24bd8d..3aed167fe32e 100644
 --- a/osfmk/kern/work_interval.c

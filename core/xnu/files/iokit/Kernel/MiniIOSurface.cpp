@@ -644,6 +644,13 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 		bpr = planeCount ? s->planes[0].bytesPerRow
 		    : alignUp((uint64_t) ((width + ew - 1) / ew) * bpe, MINISURF_ROW_ALIGN);
 	}
+	/*
+	 * A display surface's rows on 256 bytes: the Note FE's display DMA (G1) read rows of 4160 (CoreAnimation's) with
+	 * bands across the picture, pulsing; 4352 are clean (11 November). The S9's DPU takes either.
+	 */
+	if (wrapped == NULL && scanoutWanted(width, height, format, bpe, ew, eh, planeCount, bpr, offset)) {
+		bpr = alignUp(bpr, 256);
+	}
 	if (planeCount == 0) {
 		needed = (uint64_t) bpr * ((height + eh - 1) / eh);
 		/* the one implicit plane, for the per-plane getters */
