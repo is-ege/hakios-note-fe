@@ -221,11 +221,13 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'soft
         'obliterat', 'storage_mounter', 'com.apple.fud', 'sepd', 'seputil', 'camera', 'ReportCrash',
         'osanalytics', 'lockdown', 'audio', 'jetsamproperties',
         'purplebuddy', 'restore', 'usb', 'accessoryd',
-        'mobileassetd', 'bird',
+        'bird',
         # these start, crash and are asked for again, over and over. (aggregated, which was among them, is where
         # Darwin userland 16 keeps its power log -- com.apple.powerlog.plxpclogger.xpc and the rest -- that Settings > Battery
-        # waits for; it now runs through a session.)
-        'homed', 'routined', 'duetexpertd', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced',
+        # waits for; it now runs through a session. duetexpertd and mobileassetd are out too: duetexpertd serves the
+        # wallpaper gallery (com.apple.proactive.FaceSuggestions.xpc) and stops at once without mobileassetd, which makes
+        # its asset's data vault -- Note FE, 12 November 2026.)
+        'homed', 'routined', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced',
         # started by the Phone app; without CommCenter it retries the lookup without a pause: a whole core, and a
         # quarter of another in launchd, until the run ends (Note FE, 11 November 2026, seen with the console's top)
         'voicemail.vmd',

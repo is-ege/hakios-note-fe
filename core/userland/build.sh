@@ -180,7 +180,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 # SpringBoard the library above opens it, here it is named for the programs that have no library of
 # ours -- Settings, where a tweak's own pane belongs. Add a program's name to have tweaks in it.)
 INJECT=${INJECT-"/redwood/lib/libhakios.dylib backboardd containermanagerd containermanagerd_system
-/redwood/lib/libhakios.sb.dylib SpringBoard
+/redwood/lib/libhakios.sb.dylib SpringBoard PosterBoard CollectionsPoster
 /redwood/lib/libhakios.media.dylib mediaserverd
 /redwood/lib/libhakios.app.dylib Sileo
 /redwood/lib/libhakios.tweaks.dylib Preferences"}
@@ -373,8 +373,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		# our library for inside stock Darwin programs (the jobs in INJECT are started with it)
 		$DYN -dynamiclib -install_name /redwood/lib/libhakios.dylib -framework CoreFoundation -framework IOKit -lobjc \
 			-o obj/libhakios.dylib src/inject.c
-		$DYN -dynamiclib -install_name /redwood/lib/libhakios.sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libhakios.sb.dylib src/inject_sb.c
+		$DYN -dynamiclib -install_name /redwood/lib/libhakios.sb.dylib -framework CoreFoundation -framework CoreGraphics \
+			-framework IOKit -lobjc -o obj/libhakios.sb.dylib src/inject_sb.c
 		$DYN -dynamiclib -install_name /redwood/lib/libhakios.display.dylib -framework CoreFoundation -lobjc \
 			-o obj/libhakios.display.dylib src/display_native.c
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
