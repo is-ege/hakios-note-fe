@@ -2,8 +2,8 @@
  * The Exynos 8890's side of the Galaxy Note FE's Mali-T880 MP12 (hakios.mali_glue.h, mali_soc=exynos8890): the G3D
  * block's power domain, clock and supplies for the Mali driver (drivers/gpu/hakios.mali.c). S-Boot leaves the block on
  * and clocked (PLAN.md, Phase 6: run 20261108T155235): step 2 goes on only if the block is as S-Boot leaves it, at a
- * rate and voltage of Samsung's table. With mali_mhz=546 or 650 (approved by Ege, 8 November 2026) step 2 then raises
- * the supplies to that rate's (this chip's: below) and moves G3D_PLL to the rate, and the rates 260, 546 and 650 are
+ * rate and voltage of Samsung's table. With mali_mhz=546 (Ege approved up to 650, 8 November 2026) step 2 then raises
+ * the supplies to that rate's (this chip's: below) and moves G3D_PLL to the rate, and the rates 260 and 546 are
  * offered to mali_gov, each with its supplies. Powering the domain on is not done here (not approved).
  *
  *   power     the PMU's pd-g3d (the tree's pd-g3d@105c4060): configuration 0x105C4060 [3:0] = 0xF asks for it on,
@@ -117,13 +117,15 @@ extern bool hakios_s2mps16_buck_volt(int (*say)(const char *, ...), unsigned buc
 #define DIV_BUSY                (1u << 25)
 
 /*
+ * 650 MHz is left out: Samsung's table locks the big cores to 1560000 above 600 (hakios.exynos8890_cpu.c), and the
+ * window server waits for the processor, not the GPU. Swiping, mali_gov took 650 more often than not: the render
+ * thread 8.5 -> 13.3 ms a frame (runs 20261111T120820 at 546, 20261112T130551).
  * the rates offered (mali_mhz, mali_gov), lowest first: G3D_PLL's M, P, S (PLL1418X: 26 / P 2-8 MHz, VCO 600-1200 MHz),
  * and this chip's supplies at each: B6CTRL3 (600, 668.75, 706.25 mV) and B11CTRL2 (750, 800, 800 mV)
  */
 static const struct g3d_rate { uint32_t mhz, pms, hpm; uint8_t b6, b11; } rates[] = {
 	{ 260, (160u << 16) | (4u << 8) | 2u, 1, 0x30, 0x48 },
 	{ 546, (168u << 16) | (4u << 8) | 1u, 2, 0x3B, 0x50 },
-	{ 650, (100u << 16) | (4u << 8) | 0u, 2, 0x41, 0x50 },
 };
 #define SWITCH_HPM              1               /* the ECT's 455 MHz level: the switch's (528 MHz) */
 static uint32_t mali_mhz = 260;
@@ -394,7 +396,7 @@ raise(void)
 		}
 	}
 	if (to == NULL) {
-		say("mali: 2: mali_mhz=%u is not one of 260, 546, 650: 260\n", mali_mhz);
+		say("mali: 2: mali_mhz=%u is not one of 260, 546: 260\n", mali_mhz);
 		return true;
 	}
 	if (!asv_known) {
