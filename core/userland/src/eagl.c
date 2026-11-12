@@ -326,6 +326,8 @@ struct eagl {
 	uint64_t upload_bytes, began, attaching, flushing;
 	/* everything so far */
 	unsigned frames, shaders, programs, errors, shared, refused, paced;
+	unsigned shown_waits, shown_timeouts;   /* target_to_surface(): blits held while the display read their surface */
+	uint64_t shown_wait_us;
 	uint64_t all_calls, all_draws, all_triangles, readback_us, wait_us, attach_us, flush_us, frame_us;
 	uint64_t checksum_calls, checksum_bytes, checksum_us, checksum_most;
 	unsigned most_calls, most_triangles;
@@ -530,11 +532,12 @@ summary(struct eagl *e)
 	    "%u calls, %u triangles; %llu us a frame, of which %llu handing the commands on, %llu waiting for the picture "
 	    "to be drawn and %llu copying it out, and before each %llu making textures of IOSurfaces; %u IOSurfaces were "
 	    "the textures' memory, %u had to be copied; %u shaders, %u programs; biggest texture %u x %u; %u errors; "
-	    "%u frames paced, not waited for\n",
+	    "%u frames paced, not waited for; %u blits waited for the display to let go of their surface, %llu us each, %u "
+	    "of them in vain\n",
 	    e->frames, e->all_calls / frames, e->all_draws / frames, e->all_triangles / frames, e->most_calls,
 	    e->most_triangles, e->frame_us / frames, e->flush_us / frames, e->wait_us / frames, e->readback_us / frames,
 	    e->attach_us / frames, e->shared, e->refused, e->shaders, e->programs, widest_texture, tallest_texture, e->errors,
-	    e->paced);
+	    e->paced, e->shown_waits, e->shown_waits ? e->shown_wait_us / e->shown_waits : 0, e->shown_timeouts);
 	if (e->checksum_calls) {
 		say("hakios-gl-hash: calls=%llu bytes=%llu wall_us=%llu max_us=%llu\n",
 		    e->checksum_calls, e->checksum_bytes, e->checksum_us, e->checksum_most);
@@ -1109,6 +1112,22 @@ target_to_surface(struct eagl *e, struct image *image)
 	if (image->mirror != 0) {
 		GLint read = 0, draw = 0;
 
+		/*
+		 * fb_zc: the display controller reads a surface itself while it is on the panel or about to be, and its driver
+		 * keeps the surface in use for that long. CoreAnimation draws in turn into two, the second while the first is
+		 * still shown: written then, the panel showed a frame torn between two (Note FE, 12 November: 30 to 52 frames
+		 * a second while swiping). Two refreshes at most, then drawn regardless.
+		 */
+		if (IOSurfaceIsInUse(surface)) {
+			uint64_t began = now_us();
+
+			while (IOSurfaceIsInUse(surface) && now_us() - began < 34000) {
+				usleep(250);
+			}
+			e->shown_waits++;
+			e->shown_timeouts += IOSurfaceIsInUse(surface);
+			e->shown_wait_us += now_us() - began;
+		}
 		/* the frame into the surface's memory, by the GPU (blit_targets); upside down if it is drawn so */
 		glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
 		glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);

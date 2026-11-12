@@ -715,6 +715,7 @@ public:
 	uint32_t        fFpsZc, fFpsZcCopied, fFpsZcBusy;       /* fps_log: frames shown in place, copied, drawn into the one shown */
 	uint32_t        fFpsZcAgain;                            /* ... of those drawn into the one shown, how many not copied (fb_zc_hold 2) */
 	uint32_t        fFpsZcSurfaces[4], fFpsZcSurfaceCount;  /* ... the different surfaces this second's frames came from (up to 4) */
+	uint32_t        fFpsZcOnPanel;                          /* ... handed over drawn into the surface on the panel (SwapEnd) */
 	/* fps_log: the render thread (the one that hands the swaps over): its processor time from one swap to the next, the
 	 * processors it handed them over on (a bit for each, and how many on the slower cores) */
 	thread_t        fCpuThread;
@@ -1741,6 +1742,13 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	fStatHeld += fSwapsWaiting >= swapQueue();
 	fFpsHeld += fSwapsWaiting >= swapQueue();
 	fFpsPresents++;
+	/* (read unlocked: the presenter's, a count only) */
+	if (gZeroCopy && swapWord(swap, SWAP_SURFACE(0)) != 0) {
+		MiniIOSurface * front = fZcFront, * pending = fZcPending;
+
+		fFpsZcOnPanel += (front != NULL && front->sid == swapWord(swap, SWAP_SURFACE(0))) ||
+		    (pending != NULL && pending->sid == swapWord(swap, SWAP_SURFACE(0)));
+	}
 	while (fSwapsWaiting >= swapQueue()) {
 		if (IOLockSleepDeadline(fSwapLock, &fSwapsWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT &&
 		    fSwapsWaiting >= swapQueue()) {
@@ -2521,14 +2529,15 @@ IOMobileFramebuffer::fpsLine(void)
 {
 	uint32_t presents, lost, held, shown, flips, partial, same, undrawn, refreshes = hakios_scanout_refreshes(), refreshed;
 	uint32_t zc, zcCopied, zcBusy, missed, jobs = 0, mhz = 0, switches = 0;
-	uint32_t zcAgain, zcSurfaces, cpuFrames, cpuMask, waits, waitLast, waitBefore, waitOther, waitsSlept, waitsTimedOut;
+	uint32_t zcAgain, zcSurfaces, zcOnPanel, cpuFrames, cpuMask, waits, waitLast, waitBefore, waitOther, waitsSlept;
+	uint32_t waitsTimedOut;
 	uint64_t waitSlept;
 	uint64_t cpu, cpuMax;
 	uint64_t draw, drawMax, wait, waitMax, deadline, gapMax, busy = 0, queued = 0;
 	int32_t g3d = 0;
 	int gpu;
 	const char * mode;
-	char line[400];
+	char line[512];
 
 	IOLockLock(fSwapLock);
 	presents = fFpsPresents;
@@ -2548,6 +2557,8 @@ IOMobileFramebuffer::fpsLine(void)
 	waitsSlept = fFpsWaitsSlept;
 	waitsTimedOut = fFpsWaitsTimedOut;
 	waitSlept = fFpsWaitSlept;
+	zcOnPanel = fFpsZcOnPanel;
+	fFpsZcOnPanel = 0;
 	fFpsWaits = fFpsWaitLast = fFpsWaitBefore = fFpsWaitOther = fFpsWaitsSlept = fFpsWaitsTimedOut = 0;
 	fFpsWaitSlept = 0;
 	IOLockUnlock(fSwapLock);
@@ -2609,11 +2620,12 @@ IOMobileFramebuffer::fpsLine(void)
 		 * shown were shown as they were (fb_zc_hold 2) -- and on which processors the swaps were handed over (a bit each)
 		 */
 		snprintf(line, sizeof(line), "fps: cpu: the render thread %llu us a frame, %llu at most, %u frames, on cpus %#x%s; "
-		    "gpu %llu us a frame; zc: %u surfaces in turn, %u drawn into the one shown not copied; fb_zc_hold %u; swapwait: "
+		    "gpu %llu us a frame; zc: %u surfaces in turn, %u drawn into the one shown not copied, %u handed over drawn "
+		    "into the one on the panel; fb_zc_hold %u; swapwait: "
 		    "%u (%u for the last swap, %u the one before, %u other), %u waited %llu us each, %u for 2 refreshes%s\n",
 		    cpuFrames ? micros(cpu) / cpuFrames : 0, micros(cpuMax), cpuFrames, cpuMask, gRenderRT ? " (fb_rt)" : "",
-		    shown ? busy / 1000 / shown : 0, zcSurfaces, zcAgain, gZcHold, waits, waitLast, waitBefore, waitOther, waitsSlept,
-		    waitsSlept ? micros(waitSlept) / waitsSlept : 0, waitsTimedOut, gSwapWait ? " (fb_swapwait)" : "");
+		    shown ? busy / 1000 / shown : 0, zcSurfaces, zcAgain, zcOnPanel, gZcHold, waits, waitLast, waitBefore, waitOther,
+		    waitsSlept, waitsSlept ? micros(waitSlept) / waitsSlept : 0, waitsTimedOut, gSwapWait ? " (fb_swapwait)" : "");
 		loader_log_line(line);
 		IOLog("%s", line);
 	} else if (fFpsIdle++ == 0) {
