@@ -1,0 +1,2 @@
+/redwood/bin/poster_retry &
+/redwood/bin/rwtouch wait 200 button lock wait 3 button home wait 8 notify com.hakios.layers wait 30

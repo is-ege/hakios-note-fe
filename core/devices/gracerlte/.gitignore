@@ -1,0 +1,4 @@
+# build outputs
+shim/*.o
+shim/shim.elf
+shim/fdt-test
