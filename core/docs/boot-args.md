@@ -8,7 +8,7 @@ This is a catalogue of what exists and who reads it, not a manual. What an argum
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (115)
+## GPU and display (116)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -30,7 +30,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `fb_ca_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_CA_HZ` |  |
 | `fb_cpu` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_CPU` |  |
 | `fb_diff` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_DIFF` |  |
-| `fb_dpp` | K | `MiniIOMobileFramebuffer.cpp`, `hakios.s6sy761.c` | `CONFIG_FB_DPP` |  |
+| `fb_dpp` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_DPP` |  |
 | `fb_filter` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FILTER` |  |
 | `fb_flip` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FLIP` |  |
 | `fb_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_HZ` |  |
@@ -121,6 +121,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `rec_secs` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_SECS` |  |
 | `rec_start` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_START` |  |
 | `rec_step` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_STEP` |  |
+| `scfb.addr` | K | `1200-avf-scfb-display.patch`, `1202-virtio-gpu-2d.patch`, `MiniIOMobileFramebuffer.cpp`, `hakios.scfb_battery.c` | `CONFIG_SCFB_ADDR` |  |
 | `surf_clear` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_CLEAR` |  |
 | `surf_wrap` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_WRAP` |  |
 | `surftrace` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE` |  |
@@ -128,13 +129,14 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `touch_lat` | KU | `MiniIOMobileFramebuffer.cpp`, `eagl.c`, `hakios.dwc3.c`, `hakios.goodix.c`, `hakios.gpu.cpp`, `hakios.input.c`, `inject.c`, `inject_sb.c` | `CONFIG_TOUCH_LAT` |  |
 | `vblur` | U | `eagl.c` | `CONFIG_VBLUR` |  |
 
-## Security stand-ins (1)
+## Security stand-ins (2)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `privs` | K | `kern_minimac.c` | `CONFIG_PRIVS` |  |
+| `security` | K | `1002-avf-security-level.patch`, `kern_minimac.c` | `CONFIG_SECURITY` |  |
 
-## Wi-Fi (49)
+## Wi-Fi (46)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -167,9 +169,6 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `wifi_nvram` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_NVRAM` |  |
 | `wifi_pause` | K | `hakios.wifi.c` | `CONFIG_WIFI_PAUSE` |  |
 | `wifi_pcie` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE` |  |
-| `wifi_pcie_coherent` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_COHERENT` |  |
-| `wifi_pcie_mmu_bypass` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_MMU_BYPASS` |  |
-| `wifi_pcie_mmu_probe` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_MMU_PROBE` |  |
 | `wifi_pcie_tries` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_TRIES` |  |
 | `wifi_pcie_ungate` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_UNGATE` |  |
 | `wifi_psk` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_PSK` |  |
@@ -312,7 +311,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `speaker_probe` | K | `hakios.speaker.c` | `CONFIG_SPEAKER_PROBE` |  |
 | `virtio_sound` | K | `hakios.virtio_sound.c` | `CONFIG_VIRTIO_SOUND` |  |
 
-## Cameras (28)
+## Cameras (33)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -344,6 +343,11 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_settle` | K | `hakios.camera.c` | `CONFIG_CAM_SETTLE` |  |
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
+| `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
+| `sccam.h` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c` | `CONFIG_SCCAM_H` |  |
+| `sccam.size` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c` | `CONFIG_SCCAM_SIZE` |  |
+| `sccam.turn` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c` | `CONFIG_SCCAM_TURN` |  |
+| `sccam.w` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c` | `CONFIG_SCCAM_W` |  |
 
 ## Sensors (10)
 
@@ -360,7 +364,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `shub_req_rpc` | K | `hakios.ssp.c` | `CONFIG_SHUB_REQ_RPC` |  |
 | `shub_sensors` | K | `hakios.ssp.c` | `CONFIG_SHUB_SENSORS` |  |
 
-## Touch and buttons (21)
+## Touch and buttons (20)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -368,7 +372,6 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `buttons_steps` | K | `hakios.buttons.c` | `CONFIG_BUTTONS_STEPS` |  |
 | `exynos_keys` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS` |  |
 | `exynos_keys_board` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS_BOARD` |  |
-| `fb_aspect` | K | `hakios.exynos_dpu.c`, `hakios.s6sy761.c` | `CONFIG_FB_ASPECT` |  |
 | `press_power` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER` |  |
 | `press_power_ms` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER_MS` |  |
 | `s6sy761` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761` |  |
@@ -511,23 +514,31 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 |---|---|---|---|---|
 | `hakios_kver` | K | `hakios.version.c` |  | the loader (from the payload's kernel.ver) |
 
-## CPU, memory and boot (23)
+## CPU, memory and boot (32)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `applog` | K | `(patch)` | `CONFIG_APPLOG` |  |
 | `applog_name` | K | `(patch)` | `CONFIG_APPLOG_NAME` |  |
+| `avf_exit` | K | `1001-avf-psci-system-off.patch`, `loader_return.c` | `CONFIG_AVF_EXIT` |  |
 | `bootcpu` | KL | `loader.c`, `loader_return.c` | `CONFIG_BOOTCPU` |  |
+| `console_quiet` | K | `(patch)`, `1003-avf-console-quiet.patch` | `CONFIG_CONSOLE_QUIET` |  |
 | `cpufreq` | K | `hakios.cpufreq.c` | `CONFIG_CPUFREQ` |  |
 | `cpuload` | K | `hakios.cpufreq.c` | `CONFIG_CPULOAD` |  |
 | `ddr` | K | `hakios.cpufreq.c` | `CONFIG_DDR` |  |
 | `ddr_rest` | K | `hakios.cpufreq.c` | `CONFIG_DDR_REST` |  |
 | `ddr_vote` | K | `hakios.cpufreq.c` | `CONFIG_DDR_VOTE` |  |
+| `early_log` | K | `1503-early-log-and-panic.patch`, `loader_return.c` | `CONFIG_EARLY_LOG` |  |
 | `epoch` | K | `GenericARMPE.cpp` |  | xl (the host's clock) |
+| `esslog` | K | `1507-esslog-exynos-snapshot.patch`, `1509-m3-diag-and-pan-off.patch`, `loader_return.c` | `CONFIG_ESSLOG` |  |
 | `hv_wdt_pet` | K | `loader_return.c` |  | the loader, when it has armed the watchdog (the runner also passes it) |
+| `isa_floor` | K | `(patch)`, `1510-isa-floor.patch` | `CONFIG_ISA_FLOOR` |  |
 | `loader_return_after` | KL | `loader.c`, `loader_return.c` |  | xl (XL_SECS) |
+| `m3_prep` | K | `(patch)`, `1510-isa-floor.patch`, `1511-m3-user-cache-pou.patch`, `hakios.exynos_m3.c` | `CONFIG_M3_PREP` |  |
 | `machine_name` | K | `GenericARMPE.cpp` | `CONFIG_MACHINE_NAME` |  |
+| `md0` | K | `(patch)`, `1101-virtio-disk-as-md0.patch` | `CONFIG_MD0` |  |
 | `membench` | K | `hakios.cpufreq.c` | `CONFIG_MEMBENCH` |  |
+| `pan` | K | `(patch)`, `1509-m3-diag-and-pan-off.patch` | `CONFIG_PAN` |  |
 | `rd` | KL | `(patch)`, `1100-virtio-pci-transport.patch`, `loader.c` | `CONFIG_RD` |  |
 | `regtrace` | K | `(patch)` | `CONFIG_REGTRACE` |  |
 | `return_cpu` | K | `loader_return.c` | `CONFIG_RETURN_CPU` |  |
@@ -537,6 +548,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `syssleep` | K | `(patch)` | `CONFIG_SYSSLEEP` |  |
 | `systrace` | K | `(patch)`, `user_exception_trace.c` | `CONFIG_SYSTRACE` |  |
 | `systrace_name` | K | `(patch)` | `CONFIG_SYSTRACE_NAME` |  |
+| `ucache_trap` | K | `(patch)`, `1511-m3-user-cache-pou.patch` | `CONFIG_UCACHE_TRAP` |  |
 | `xpcproxy_idversion` | K | `(patch)` | `CONFIG_XPCPROXY_IDVERSION` |  |
 
 ## Debugging (8)
@@ -565,12 +577,11 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (85)
+## User space (73)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `autounlock` | U | `inject_sb.c` | `CONFIG_AUTOUNLOCK` |  |
-| `avf_exit` | K | `1001-avf-psci-system-off.patch` | `CONFIG_AVF_EXIT` |  |
 | `brightness_bridge` | U | `inject_sb.c` | `CONFIG_BRIGHTNESS_BRIDGE` |  |
 | `bt` | K | `hakios.bcm4361_bt.c`, `hakios.bt.c` | `CONFIG_BT` |  |
 | `bt_again` | K | `hakios.bt.c` | `CONFIG_BT_AGAIN` |  |
@@ -590,7 +601,6 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cc_fade` | U | `inject_sb.c` | `CONFIG_CC_FADE` |  |
 | `cohtest` | K | `hakios.exynos_m3.c` | `CONFIG_COHTEST` |  |
 | `cohtest_delay` | K | `hakios.exynos_m3.c` | `CONFIG_COHTEST_DELAY` |  |
-| `console_quiet` | K | `1003-avf-console-quiet.patch` | `CONFIG_CONSOLE_QUIET` |  |
 | `cpufreq_gov` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV` |  |
 | `cpufreq_gov_big_max` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV_BIG_MAX` |  |
 | `cpufreq_gov_big_min` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV_BIG_MIN` |  |
@@ -600,8 +610,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cpufreq_gov_ms` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_GOV_MS` |  |
 | `cpufreq_soc` | K | `hakios.exynos_cpufreq.c` | `CONFIG_CPUFREQ_SOC` |  |
 | `cs_relax_platform_task_ports` | K | `1002-avf-security-level.patch` | `CONFIG_CS_RELAX_PLATFORM_TASK_PORTS` |  |
-| `early_log` | K | `1503-early-log-and-panic.patch` | `CONFIG_EARLY_LOG` |  |
-| `esslog` | K | `1507-esslog-exynos-snapshot.patch`, `1509-m3-diag-and-pan-off.patch` | `CONFIG_ESSLOG` |  |
+| `fb_aspect` | K | `hakios.exynos_dpu.c` | `CONFIG_FB_ASPECT` |  |
 | `gl` | U | `inject.c`, `inject_sb.c` | `CONFIG_GL` |  |
 | `glcompile` | U | `inject.c` | `CONFIG_GLCOMPILE` |  |
 | `glno` | U | `inject.c` | `CONFIG_GLNO` |  |
@@ -618,34 +627,22 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu3d_size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D_SIZE` |  |
 | `immediate_NMI` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_IMMEDIATE_NMI` |  |
 | `ioaes` | K | `MiniIOAESAccelerator.cpp` | `CONFIG_IOAES` |  |
-| `isa_floor` | K | `1510-isa-floor.patch` | `CONFIG_ISA_FLOOR` |  |
-| `m3_diag` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_DIAG` |  |
-| `m3_flush` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_FLUSH` |  |
-| `m3_ids` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_IDS` |  |
-| `m3_prep` | K | `1510-isa-floor.patch`, `1511-m3-user-cache-pou.patch`, `hakios.exynos_m3.c` | `CONFIG_M3_PREP` |  |
-| `md0` | K | `1101-virtio-disk-as-md0.patch` | `CONFIG_MD0` |  |
+| `m3_diag` | K | `1509-m3-diag-and-pan-off.patch`, `psci_smp.c` | `CONFIG_M3_DIAG` |  |
+| `m3_flush` | K | `1509-m3-diag-and-pan-off.patch`, `psci_smp.c` | `CONFIG_M3_FLUSH` |  |
+| `m3_ids` | K | `1509-m3-diag-and-pan-off.patch`, `psci_smp.c` | `CONFIG_M3_IDS` |  |
 | `metal_profile` | U | `hakiosmetal_air.m` | `CONFIG_METAL_PROFILE` |  |
-| `pan` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_PAN` |  |
 | `poster_retry` | U | `poster_retry.c` | `CONFIG_POSTER_RETRY` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
-| `rtc_pmic` | K | `hakios.s2mps18_rtc.c` | `CONFIG_RTC_PMIC` |  |
+| `rtc_pmic` | K | `hakios.pmic_rtc.c` | `CONFIG_RTC_PMIC` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
 | `sb_fps` | U | `inject_sb.c` | `CONFIG_SB_FPS` |  |
-| `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
-| `sccam.h` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_H` |  |
-| `sccam.size` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_SIZE` |  |
-| `sccam.turn` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_TURN` |  |
-| `sccam.w` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_W` |  |
-| `scfb.addr` | K | `1200-avf-scfb-display.patch`, `1202-virtio-gpu-2d.patch`, `hakios.scfb_battery.c` | `CONFIG_SCFB_ADDR` |  |
 | `scgpu.addr` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_SCGPU_ADDR` |  |
 | `scgpu.size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_SCGPU_SIZE` |  |
 | `scsnd.addr` | K | `hakios.scsnd.c` | `CONFIG_SCSND_ADDR` |  |
 | `scsnd.size` | K | `hakios.scsnd.c` | `CONFIG_SCSND_SIZE` |  |
-| `security` | K | `1002-avf-security-level.patch` | `CONFIG_SECURITY` |  |
 | `switcher_wallpaper` | U | `inject_sb.c` | `CONFIG_SWITCHER_WALLPAPER` |  |
 | `system_apfs` | U | `init.c` | `CONFIG_SYSTEM_APFS` |  |
 | `touch_fault` | U | `inject.c` | `CONFIG_TOUCH_FAULT` |  |
-| `ucache_trap` | K | `1511-m3-user-cache-pou.patch` | `CONFIG_UCACHE_TRAP` |  |
 | `var_hfs` | U | `init.c` | `CONFIG_VAR_HFS` |  |
 | `var_seed` | U | `init.c` | `CONFIG_VAR_SEED` |  |
 | `var_store` | U | `init.c` | `CONFIG_VAR_STORE` |  |
@@ -654,3 +651,6 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `virtio_console` | K | `hakios.virtio_console.c` | `CONFIG_VIRTIO_CONSOLE` |  |
 | `virtio_mmio` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_MMIO` |  |
 | `virtio_poll` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_POLL` |  |
+| `wifi_pcie_coherent` | K | `hakios.exynos9810_pcie.c` | `CONFIG_WIFI_PCIE_COHERENT` |  |
+| `wifi_pcie_mmu_bypass` | K | `hakios.exynos9810_pcie.c` | `CONFIG_WIFI_PCIE_MMU_BYPASS` |  |
+| `wifi_pcie_mmu_probe` | K | `hakios.exynos9810_pcie.c` | `CONFIG_WIFI_PCIE_MMU_PROBE` |  |

@@ -3473,9 +3473,9 @@ static int64_t
 run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const struct kernel_live *live, uint64_t slide,
     uint64_t budget)
 {
-	uint64_t daif = 0, group1 = 0, started, last_pet, last_battery, last_beat_at, last_beat = 0, noted = 0;
+	uint64_t daif = 0, group1 = 0, cntkctl = 0, started, last_pet, last_battery, last_beat_at, last_beat = 0, noted = 0;
 	int64_t status;
-	int arrived = 0, watching_only = 0;
+	int arrived = 0, watching_only = 0, events = 0;
 
 	running_live = live;
 	run_active = 1;
@@ -3534,6 +3534,21 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 				group1 = READ_SYSREG(S3_0_C12_C12_7);  /* ICC_IGRPEN1_EL1 */
 				__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" ((uint64_t)0));
 			}
+			/*
+			 * Without the block service nothing here needs an answer within a millisecond: the pause below is a WFE,
+			 * woken by the timer's event stream (EVNTEN, an event each 2^(EVNTI+1) ticks, about 1 ms), not a spin
+			 * that kept this core at full power for the whole run.
+			 */
+			if (!block_enabled) {
+				uint64_t evnti = 0;
+
+				while ((2ull << evnti) < timer_hz() / 1000 && evnti < 15) {
+					evnti++;
+				}
+				cntkctl = READ_SYSREG(CNTKCTL_EL1);
+				__asm__ volatile ("msr CNTKCTL_EL1, %0\nisb" : : "r" ((cntkctl & ~0xf4ull) | (evnti << 4) | (1ull << 2)));
+				events = 1;
+			}
 		}
 		/* both are written by a core with its caches off: look at memory, not at our copy */
 		flush_dcache((uint64_t)(uintptr_t)&other_cpu_done, (uint64_t)(uintptr_t)&other_cpu_done + 8);
@@ -3591,6 +3606,8 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 				for (volatile int i = 0; i < 300; i++) {
 				}
 			}
+		} else if (events) {
+			__asm__ volatile ("wfe");
 		} else {
 			for (volatile int i = 0; i < 20000; i++) {
 			}
@@ -3598,6 +3615,9 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 	}
 	running_live = NULL;
 	run_active = 0;
+	if (events) {
+		__asm__ volatile ("msr CNTKCTL_EL1, %0\nisb" : : "r" (cntkctl));
+	}
 
 	if (watching_only) {
 		if (loader_gic_sysregs) {

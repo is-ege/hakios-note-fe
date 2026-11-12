@@ -58,7 +58,7 @@ int hakios_acpm_pmic_read(__unused uint32_t type, __unused uint32_t reg, __unuse
 int hakios_acpm_pmic_update(__unused uint32_t type, __unused uint32_t reg, __unused uint8_t value, __unused uint8_t mask) { return ENXIO; }
 #endif
 
-#ifndef HAKIOS_S2MPS18_RTC
+#ifndef HAKIOS_PMIC_RTC
 uint64_t hakios_rtc_boot_time(uint64_t epoch);
 /* the time of day at start-up (GenericARMPE.cpp): no clock of the phone's own, what the loader or epoch= said */
 uint64_t

@@ -30,7 +30,7 @@ case " $* " in
 	# The panel's brightness (hakios.s6e3ha5.c, panel=1) and iOS's slider taken to it (brightness_bridge=1).
 	# A device driver's arguments, which the configuration does not know (tools/boot-args.py
 	# reads only the common tree), so they are given here.
-	CMDLINE=$(python3 $CORE/tools/hakios-config.py --root $CORE args --with "max77854=1 max77854_usbsw=1 s2mps16_tsp=1 decon_vclk42=1 mali_mhz=546 mali_gov=1 mali_gov_frame=546 wifi_pcie=6 brcmfmac=8 wifi_nvram=nvram.txt_murata_c0_plus ufs_native_ro=0 ufs_native_write=USERDATA var_hfs=ufs_USERDATA_data panel=1 brightness_bridge=1 ${ARGS:-}")
+	CMDLINE=$(python3 $CORE/tools/hakios-config.py --root $CORE args --with "max77854=1 max77854_usbsw=1 s2mps16_tsp=1 decon_vclk42=1 mali_mhz=546 mali_gov=1 mali_gov_frame=546 wifi_pcie=6 brcmfmac=8 wifi_nvram=nvram.txt_murata_c0_plus ufs_native_write=USERDATA var_hfs=ufs_USERDATA_data panel=1 brightness_bridge=1 ${ARGS:-}")
 	echo "mkboot: boot-args: $CMDLINE"
 	set -- "$@" --cmdline "$CMDLINE" ;;
 esac

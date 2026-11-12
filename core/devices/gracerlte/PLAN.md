@@ -405,6 +405,19 @@ vibration → install-on-flash release flow (BOOT + SYSTEM, return timer kept). 
   sent only on a new frame (the surface free after its own transfer), and the readback done by the GPU.
   The kernel command line holds 606 of 607 (CONFIG_CMDLINE_RUN=256): a new boot-arg needs room made first, e.g. by
   moving mkboot.sh's --with words into the device config. mali=9 is in the SoC config now; runs need no ARGS.
+- **Done 2026-11-12: battery drain while plugged in (runs 20261112T150418 to T154948).** Ege: iOS drained the battery
+  even on the laptop's USB. Three causes. (1) The charger stopped ~100 s into every run: S-Boot leaves the MAX77854's
+  watchdog on (CNFG_00 WDTEN) and nothing fed it (DETAILS_01 0xB); hakios.max77854.c now restarts it each poll (CNFG_06
+  WDTCLR, Samsung's own; approved by Ege, the charger's only write). Input stays at S-Boot's 500 mA: idle with the
+  screen on it charges ~+110 mA, under load the battery still makes up the rest (boot draws ~1.4 A). (2) iOS's power
+  and activity loggers (aggregated, coreduetd, biomed, dasd) held ~2.3 cores at 1872-2288 MHz and 70-76 C, idle or
+  locked: their stores in the kept /private/var had times from 1970 and from 2026 (Wi-Fi's time). The calendar now
+  starts at the S2MPS16's RTC (CONFIG_HAKIOS_PMIC_RTC, rtc_pmic=1: drivers/power/hakios.pmic_rtc.c with a chip glue,
+  read only), right to the second, and /private/var was emptied once (Ege approved): ~6% of one core at idle, 728 MHz,
+  48 C. (3) The loader's A53 spun for the whole run; it now waits with WFE on the timer's event stream (~1 ms) once
+  it only watches. ufs_native_ro=1 left the device config (mkboot.sh no longer overrides it: room on the command line).
+  Still open: the panel stays on at 60 Hz while locked (iOS blanks it and stops drawing, but kFBMethodRequestPowerChange
+  is ignored: the DECON and DSIM keep refreshing); no system sleep.
 - **Done 2026-11-12: the GPU no higher than 546 MHz (device 87c67f9, core 1e536cf).** Ege: the frame rate had
   dropped, even swiping the home screen. Samsung's table locks the big cores to 1560 MHz while the G3D runs above
   600; the poster wallpaper's heavier frames (GPU 5.1 -> 6.3 ms) made mali_gov take 650 most of the time, so the

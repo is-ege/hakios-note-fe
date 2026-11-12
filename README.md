@@ -20,7 +20,7 @@ kept as it came, so that the S9 port's changes can still be merged in (`git fetc
 | CPU | The four big cores, 728 to 2288 MHz at Samsung's voltages, cooled by the SoC's own temperatures. The small cores are not used |
 | Touch, buttons | Work (power, volume, Home) |
 | Storage | iOS's system in the SYSTEM partition; `/private/var` kept between boots in USERDATA |
-| Battery | Level and charging shown (read only; the charger is never written) |
+| Battery | Level and charging shown; charges while plugged in (the charger's watchdog is fed, nothing else of it written) |
 | Wi-Fi | BCM4359 joins networks, with Samsung's firmware from your own stock image |
 | Wallpapers | Chosen and edited in Settings without Metal; some gallery previews are placeholders |
 | Not working | Audio, cameras, cellular, vibration, Metal |

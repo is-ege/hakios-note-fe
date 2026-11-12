@@ -21,6 +21,13 @@
  * (B2CTRL2) for the big cluster's rate (hakios.exynos8890_cpu.c), BUCK6 vdd_g3d (B6CTRL3, its voltage while DVS is off)
  * and BUCK11 vdd_extra (B11CTRL2) for the GPU's (hakios.exynos8890_g3d.c).
  *
+ * The real-time clock (hakios_rtc_chip_read, the chip's side of hakios.pmic_rtc.c, rtc_pmic=1) is the PMIC's RTC block
+ * at 0x06 on the same bus, read only: CTRL 0x00 (bit 0 BCD, bit 1 24-hour), UPDATE 0x02, CAPSEL 0x03, then SEC, MIN,
+ * HOUR (bit 6 PM, not used in 24-hour mode), WEEK, DAY, MONTH (1-12), YEAR (since 2000) at 0x04-0x0A, all binary. What
+ * they hold is S-Boot's read at boot (its pmic_rtc_read_time latches them); Linux takes the clock as set up when CTRL
+ * is binary, 24-hour and CAPSEL is 0xF8 (rtc-sec.c, s2m_rtc_init_reg). Seen from TWRP, 12 November 2026: right to the
+ * second.
+ *
  * The bus is shared: with the APM, which Samsung's kernel lets take it only after its mailbox driver says the APM
  * is ready (i2c-exynos5.c, the APM notifier: then the pins go to the APM) -- nothing here starts the APM, so the bus
  * is the AP's, as in Samsung's kernel before that -- and with the CP, which does not run. S-Boot drives the bus by
@@ -29,7 +36,7 @@
  *
  * Sources: the phone's device tree (hsi2c@10550000, s2mps16_pmic@66/regulators/LDO32-33, touchscreen@48), Samsung's
  * kernel for the 8890 (LineageOS android_kernel_samsung_universal8890: include/linux/mfd/samsung/s2mps16.h,
- * drivers/regulator/s2mps16.c, drivers/i2c/busses/i2c-exynos5.c, drivers/input/touchscreen/sec_ts/sec_ts.c,
+ * drivers/regulator/s2mps16.c, drivers/rtc/rtc-sec.c and include/linux/mfd/samsung/rtc.h (the RTC), drivers/i2c/busses/i2c-exynos5.c, drivers/input/touchscreen/sec_ts/sec_ts.c,
  * S5E8890-cmusfr.h, pinctrl-exynos.c). GPL-2.0: read for facts, no code taken.
  */
 #include <stdarg.h>
@@ -41,12 +48,14 @@
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos_hsi2c.h>
+#include "hakios.pmic_rtc.h"
 
 bool hakios_s2mps16_touch_power(int (*say)(const char *, ...));
 bool hakios_s2mps16_g3d_supply(int (*say)(const char *, ...), uint8_t *b6ctrl3);
 bool hakios_s2mps16_buck_volt(int (*say)(const char *, ...), unsigned buck, uint8_t from, uint8_t to);
 
 #define PMIC                    0x66
+#define RTC                     0x06
 #define REG_ID                  0x00
 #define ON_MODE                 0xC0
 
@@ -214,4 +223,35 @@ hakios_s2mps16_buck_volt(int (*say)(const char *, ...), unsigned buck, uint8_t f
 	}
 	delay_for_interval(100, NSEC_PER_USEC);         /* ~12 us a 150 mV step at 12 mV/us */
 	return true;
+}
+
+const char *
+hakios_rtc_chip_read(int (*say)(const char *, ...), struct hakios_rtc_clock *clock)
+{
+	uint8_t r[11] = { 0 };          /* CTRL, WTSR_SMPL, UPDATE, CAPSEL, SEC, MIN, HOUR, WEEK, DAY, MONTH, YEAR */
+	uint32_t e;
+
+	lck_mtx_lock(&bus_lock);
+	if (!bus_start(say)) {
+		lck_mtx_unlock(&bus_lock);
+		return "its bus could not be started";
+	}
+	e = hakios_hsi2c_read_reg(&bus, RTC, 0x00, r, sizeof(r));
+	lck_mtx_unlock(&bus_lock);
+	if (e != 0) {
+		say("rtc: S2MPS16 RTC (0x06) did not answer (%x)\n", e);
+		return "the RTC did not answer";
+	}
+	say("rtc: S2MPS16 RTC, read only: CTRL %02x UPDATE %02x CAPSEL %02x SEC %02x MIN %02x HOUR %02x WEEK %02x DAY %02x "
+	    "MONTH %02x YEAR %02x\n", r[0], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10]);
+	if ((r[0] & 3) != 2 || r[3] != 0xf8) {
+		return "CTRL or CAPSEL not as Linux sets them up: the clock was reset";
+	}
+	clock->sec = r[4] & 0x7f;
+	clock->min = r[5] & 0x7f;
+	clock->hour = r[6] & 0x1f;
+	clock->day = r[8] & 0x1f;
+	clock->month = r[9] & 0x0f;
+	clock->year = 2000 + (r[10] & 0x7f);
+	return NULL;
 }

@@ -3,7 +3,7 @@
  * switch and status were left at, and the charger's SAFEOUT control. The USB log (usb_gadget=) needs D+/D- on the AP's
  * USB PHY, and the MUIC's switch decides where they go. S-Boot leaves it open (CTRL1 0x00, seen 8 November 2026, after
  * TWRP had it on USB), so max77854_usbsw=1 writes CTRL1 = 0x09, the AP's USB, as Samsung's com_to_usb_ap does on
- * every USB attach, and reads it back. That one register is the only write to the chip; S-Boot sets it again at boot.
+ * every USB attach, and reads it back. S-Boot sets it again at boot.
  *
  * MUIC at 0x25: ID 0x00, INT1-3 0x01-0x03, STATUS1-3 0x04-0x06, INTMASK1-3, CDETCTRL1-2 0x0A-0x0B, CTRL1-3 0x0C-0x0E,
  * CTRL4 0x16. CTRL1: COMN1SW [2:0] and COMP2SW [5:3] (0 open, 1 the AP's USB, 3 the AP's UART, 4 the CP's USB, 5 the
@@ -19,7 +19,12 @@
  * FullCapRep, 1 mAh with the tree's fg_resistor 2; 0x06 RepSOC, 1/256 %; 0x08 temperature, 1/256 C; 0x09 VCELL, 78.125 uV;
  * 0x0A current, signed, 312.5 uA, more than 0 charging; 0x17 cycles, 1/100) and the charger's 0xB2 INT_OK (bit 6 the USB
  * input, bit 5 wireless) and 0xB4 DETAILS_01 ([3:0]: 0-2 charging, 3-4 full), read every 5 seconds and handed to iOS's
- * power source (hakios_battery_report); the MAX77705's registers (drivers/power/hakios.max77705.c). Read only.
+ * power source (hakios_battery_report); the MAX77705's registers (drivers/power/hakios.max77705.c).
+ *
+ * The charger's one write: S-Boot leaves its watchdog on (CNFG_00 WDTEN), and unfed it stops the charging ~100 s into the
+ * run for the rest of it (DETAILS_01 0xB, the battery then covering whatever the USB input does not; run 20261112T150418).
+ * Each poll restarts it as Samsung's driver does (CNFG_06 WDTCLR, the CHGPROT bits as found; approved by Ege, 12 November
+ * 2026). Currents, voltages and the mode stay as S-Boot set them (500 mA in from a computer's USB).
  * The temperature is the battery's thermistor, channel 1 of the SoC's ADC (adc@13620000, exynos-adc-v2: CON1 0x00 bit 2
  * reset, bit 0 start; CON2 0x04 = 0x760 and the channel; DAT 0x0C [11:0]; INT_EN 0x10; INT_ST 0x14), read as Samsung
  * does (five conversions, the highest and the lowest dropped) through the tree's battery,temp_table_adc and _data. Its
@@ -68,8 +73,17 @@ extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
 #define  CTRL1_USB_AP           0x09            /* COMN1SW and COMP2SW 1: D- and D+ to the AP's USB */
 #define MUIC_CTRL4              0x16
 #define CHG_SAFEOUT_CTRL        0xC6
-#define CHG_INT_OK              0xB2
+#define CHG_INT_OK              0xB2            /* the charger's status and settings, read together: 0xB2-0xC0 */
+#define CHG_DETAILS_00          0xB3            /* [6:5] CHGIN_DTLS: 3 the input valid */
 #define CHG_DETAILS_01          0xB4
+#define CHG_DETAILS_02          0xB5
+#define CHG_CNFG_00             0xB7            /* bit 4 WDTEN: the charger's watchdog; [3:0] MODE */
+#define  WDTEN                  0x10
+#define CHG_CNFG_02             0xB9            /* [5:0] the charge current, 50 mA */
+#define CHG_CNFG_06             0xBD            /* [3:2] CHGPROT, [1:0] WDTCLR: 1 restarts the watchdog */
+#define  WDTCLR                 0x01
+#define CHG_CNFG_09             0xC0            /* [6:0] the input current limit, 33.3 mA */
+#define CHG_LAST                CHG_CNFG_09
 #define FG_ADDR                 0x36
 #define FG_STATUS               0x00
 #define FG_REPCAP               0x05
@@ -187,15 +201,15 @@ static thread_call_t battery_call;
 static void
 battery_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
-	static unsigned tick, failed;
+	static unsigned tick, failed, wdt_failed;
+	static uint8_t dtls_before = 0xff;
 	uint16_t status, soc, vcell, current, cap, full, cycles, temp;
-	uint8_t ok, dtls;
+	uint8_t chg[CHG_LAST - CHG_INT_OK + 1], ok, dtls;
 	uint64_t deadline, t0 = mach_absolute_time(), ns;
 
 	if (fg16(FG_STATUS, &status) || fg16(FG_REPSOC, &soc) || fg16(FG_VCELL, &vcell) || fg16(FG_CURRENT, &current) ||
 	    fg16(FG_REPCAP, &cap) || fg16(FG_FULLCAPREP, &full) || fg16(FG_CYCLES, &cycles) || fg16(FG_TEMPERATURE, &temp) ||
-	    hakios_hsi2c_read_reg(&bus, CHG_ADDR, CHG_INT_OK, &ok, 1) ||
-	    hakios_hsi2c_read_reg(&bus, CHG_ADDR, CHG_DETAILS_01, &dtls, 1)) {
+	    hakios_hsi2c_read_reg(&bus, CHG_ADDR, CHG_INT_OK, chg, sizeof(chg))) {
 		if (++failed == 1 || failed % 60 == 0) {
 			say("max77854: the gauge or the charger did not answer (%x), %u times in a row\n", bus.last_error, failed);
 		}
@@ -203,6 +217,18 @@ battery_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		struct hakios_battery_state b = { .size = sizeof(b) };
 
 		failed = 0;
+		ok = chg[CHG_INT_OK - CHG_INT_OK];
+		dtls = chg[CHG_DETAILS_01 - CHG_INT_OK];
+		if (chg[CHG_CNFG_00 - CHG_INT_OK] & WDTEN) {
+			uint8_t w[2] = { CHG_CNFG_06, (uint8_t)((chg[CHG_CNFG_06 - CHG_INT_OK] & ~3u) | WDTCLR) };
+			uint32_t e = hakios_hsi2c_message(&bus, CHG_ADDR, false, w, sizeof(w), true);
+
+			if (e != 0 && (++wdt_failed == 1 || wdt_failed % 60 == 0)) {
+				say("max77854: the charger's watchdog not restarted (%x), %u times in a row\n", e, wdt_failed);
+			} else if (e == 0) {
+				wdt_failed = 0;
+			}
+		}
 		b.percent_hundredths = MIN((int32_t)((uint32_t)soc * 100 / 256), 10000);
 		b.voltage_uv = (int32_t)((uint64_t)vcell * 78125 / 1000);
 		b.current_ua = (int32_t)(int16_t)current * 3125 / 10;
@@ -216,7 +242,16 @@ battery_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		b.cycles = cycles / 100;
 		b.usb_type = b.external ? 2 : 0;
 		hakios_battery_report(&b);
-		if (tick++ % 60 == 0) {
+		/* each change of the charger's state, and every 5 minutes */
+		if (tick++ % 60 == 0 || dtls != dtls_before) {
+			uint8_t lim = chg[CHG_CNFG_09 - CHG_INT_OK] & 0x7f, cc = chg[CHG_CNFG_02 - CHG_INT_OK] & 0x3f;
+
+			dtls_before = dtls;
+			say("max77854: charger: DETAILS_00-02 %02x %02x %02x CNFG_00 %02x (watchdog %s, mode %x) CNFG_02 %02x "
+			    "(%d mA) CNFG_06 %02x CNFG_09 %02x (input %d mA)\n", chg[CHG_DETAILS_00 - CHG_INT_OK], dtls,
+			    chg[CHG_DETAILS_02 - CHG_INT_OK], chg[CHG_CNFG_00 - CHG_INT_OK],
+			    chg[CHG_CNFG_00 - CHG_INT_OK] & 0x10 ? "on" : "off", chg[CHG_CNFG_00 - CHG_INT_OK] & 0xf, cc,
+			    cc <= 2 ? 100 : cc * 50, chg[CHG_CNFG_06 - CHG_INT_OK], lim, lim <= 3 ? 100 : lim * 100 / 3);
 			absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
 			say("max77854: battery: %d.%02d%%, %d mV, %d mA, %s, %s, %d of %d mAh (full %d), %d cycles; INT_OK %02x "
 			    "DETAILS_01 %02x; %d.%d C (ADC %d; the gauge's own %d C); read in %llu us\n", b.percent_hundredths / 100,
