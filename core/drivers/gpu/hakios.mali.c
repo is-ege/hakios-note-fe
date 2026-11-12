@@ -1388,7 +1388,7 @@ gov_start(void)
 	if (!mali_gov) {
 		return;
 	}
-	if (GOV_LEVELS < 3 || (gov_level = glue->rate_now()) >= GOV_LEVELS) {
+	if (GOV_LEVELS < 2 || (gov_level = glue->rate_now()) >= GOV_LEVELS) {
 		say("mali: mali_gov=1: not started (the %s glue has %u rates, and its clock is %s one of them it may move)\n",
 		    glue->name, GOV_LEVELS, GOV_LEVELS != 0 && gov_level < GOV_LEVELS ? "at" : "NOT at");
 		return;
