@@ -1,0 +1,6 @@
+# HakiOS defconfig for the Galaxy Note FE (gracerlte): the common kernel, the exynos8890 family's facts, and this device's own.
+# open.config: nothing of the phone's own is loaded (no firmware pulled yet).
+#include common_defconfig
+#include open.config
+#include exynos8890.config
+#include gracerlte.config

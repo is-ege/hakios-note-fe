@@ -1,0 +1,42 @@
+# devices/gracerlte/soc/drivers/core/conf: the Exynos 8890's own drivers (docs/porting/drivers.md).
+
+driver EXYNOS8890_CPU
+	file    bsd/dev/hakios.exynos8890_cpu.c
+	default n
+	help    the Exynos 8890's cores: Samsung's EL3 grants CPU_ON and leaves the core off, so the PMU powers it after each
+	help    granted CPU_ON (patch 1513); acts on the cores cpus= gives the kernel
+
+driver EXYNOS8890_USB
+	file    bsd/dev/hakios.exynos8890_usb.c
+	default n
+	requires USB_GADGET
+	help    the Exynos 8890's USB port, the SoC's half for USB_GADGET (usb_gadget_soc=exynos8890): the PMU's isolation,
+	help    the USB3 DRD PHY's control (Samsung's CAL sequence), the clocks as S-Boot leaves them
+
+driver EXYNOS8890_DECON
+	file    bsd/dev/hakios.exynos8890_decon.c
+	default n
+	help    the Exynos 8890's DECON_F as the display's scan-out (MiniIOMobileFramebuffer.cpp, fb_flip=1): frames flipped
+	help    between buffers at a refresh on S-Boot's window and VPP channel; the S9's EXYNOS_DPU for this SoC
+
+driver EXYNOS8890_G3D
+	file    bsd/dev/hakios.exynos8890_g3d.c
+	default n
+	requires MALI
+	help    the Exynos 8890's side of the Note FE's Mali-T880 (mali_soc=exynos8890): the G3D block as S-Boot leaves it,
+	help    read (the domain, G3D_PLL, BUCK6 through the S2MPS16 driver, the ASV fuses); with mali_mhz=546 or 650 the
+	help    supplies raised to 650 MHz's and G3D_PLL moved (Samsung's table, this chip's ASV), the rates offered to mali_gov
+
+driver EXYNOS8890_TMU
+	file    bsd/dev/hakios.exynos8890_tmu.c
+	default n
+	requires EXYNOS_TMU
+	help    the Exynos 8890's side of the TMU driver (tmu_soc=exynos8890): the Note FE's four blocks (MNGS, APOLLO, GPU,
+	help    ISP), one sensor each, read only
+
+driver EXYNOS8890_PCIE
+	file    bsd/dev/hakios.exynos8890_pcie.c
+	default n
+	requires EXYNOS_PCIE
+	help    the Exynos 8890's side of the PCIe driver: the Note FE's channel 0 to its BCM4359 (the clock muxes of
+	help    CMU_FSYS1, the PHY's tables), stage 1

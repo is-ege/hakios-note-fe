@@ -1,0 +1,16 @@
+# devices/gracerlte/drivers/power/conf: the Galaxy Note FE's own power drivers (docs/porting/drivers.md).
+
+driver MAX77854
+	file    bsd/dev/hakios.max77854.c
+	default n
+	requires EXYNOS_HSI2C BATTERY
+	help    the MAX77854 (charger, fuel gauge, MUIC) on HSI2C 0x13650000: the MUIC's USB switch and status
+	help    and the charger's SAFEOUT control as the boot left them (max77854=1); max77854_usbsw=1 switches D+/D- to the AP's USB;
+	help    the battery, its gauge and the charger's state read (never written) for HakiosBattery, the power source iOS reads
+
+driver S2MPS16
+	file    bsd/dev/hakios.s2mps16.c
+	default n
+	requires EXYNOS_HSI2C
+	help    the S2MPS16 PMIC on HSI2C 0x10550000: the touch screen's supplies (LDO32, LDO33) read, for the S6SY761 driver's
+	help    gracerlte board; s2mps16_tsp=1 switches them on
