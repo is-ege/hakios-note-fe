@@ -196,6 +196,12 @@ void            MiniIOSurfaceDrop(MiniIOSurface * surface);
 void            MiniIOSurfaceScanout(uint32_t width, uint32_t height);
 /* The display holds a surface on the panel (+1) and lets go of it (-1): its use count, as IOSurfaceIsInUse() reads it. */
 void            MiniIOSurfaceUse(MiniIOSurface * surface, int delta);
+/*
+ * fb_zc: the surface that holds a display surface's newest frame, held, when that is another one: the GPU's library draws
+ * a frame elsewhere while the panel still reads the surface it is for (its value "HakiosDrawnInto", a surface's number;
+ * userland/src/eagl.c). NULL: the surface itself.
+ */
+MiniIOSurface * MiniIOSurfaceDrawnInto(MiniIOSurface * surface);
 /* A Mach send right for the surface in the task (what IOSurfaceCreateMachPort gives); 0 on failure. */
 mach_port_name_t MiniIOSurfaceMakeSendRight(task_t task, MiniIOSurface * surface);
 

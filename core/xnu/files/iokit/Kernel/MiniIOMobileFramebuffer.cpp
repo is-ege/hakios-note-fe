@@ -427,7 +427,8 @@ static TUNABLE(uint32_t, gFpsLog, "fps_log", 0);
  * the presenter's every frame. The surface is held, and its use count raised (IOSurfaceIsInUse()), from its flip until
  * another one's has been taken. A frame of any other kind -- more than one layer, a part of the display, a surface of
  * ordinary memory, or the very surface on the panel drawn into again -- is copied as before. fps_log says how many went
- * which way ("zc: N in place, N copied, N into the one shown").
+ * which way ("zc: N in place, N copied, N into the one shown"). The GPU's library draws a frame for a surface still in use
+ * into another one, and SwapEnd shows that (MiniIOSurfaceDrawnInto()).
  */
 static TUNABLE(uint32_t, gZeroCopy, "fb_zc", 0);
 /*
@@ -733,6 +734,7 @@ public:
 	uint32_t        fFpsMissed;
 	/* fps_log: this second's counts */
 	uint32_t        fFpsPresents, fFpsShown, fFpsFlips, fFpsLost, fFpsHeld, fFpsPartial, fFpsIdle, fFpsRefreshes;
+	uint32_t        fFpsRows;               /* rows written unscaled (the rest were already in the buffer) */
 	thread_t        fSwapThread;            /* fps_log: the thread the last swap came from, and how the kernel classed it */
 	uint32_t        fSwapClass;
 	SInt32          fFpsVSyncs;
@@ -1244,21 +1246,32 @@ sample_at(int64_t i, int64_t in, int64_t out)
 /* A layer's rectangle on the panel, in pixels, further out than this is not drawn (the panel is a few thousand wide). */
 #define DST_LIMIT       (1 << 24)
 
-/* A row of pixels as one number (fScanSig): a row that differs in one place never gives the same. */
-static inline uint64_t
+/*
+ * A row of pixels as one number (fScanSig): a row that differs in one place never gives the same. CRC32C, four streams:
+ * at idle (728 MHz) the multiply hash before took 2.6 ms a frame, more than the copy it saved. Every core this runs on
+ * has the instruction (Exynos M1, M3, Apple's).
+ */
+static inline uint64_t __attribute__((target("crc")))
 rowHash(const uint32_t * p, uint32_t n)
 {
-	uint64_t a = 0x9E3779B97F4A7C15ull, b = 0xC2B2AE3D27D4EB4Full;
-	uint32_t i = 0;
+	uint32_t c0 = 0, c1 = ~0u, c2 = 0x9E3779B9u, c3 = 0x85EBCA6Bu, i = 0, words = n / 2;
+	uint64_t w[4];
 
-	for (; i + 4 <= n; i += 4) {
-		a = (a ^ (p[i] | (uint64_t) p[i + 1] << 32)) * 0xFF51AFD7ED558CCDull;
-		b = (b ^ (p[i + 2] | (uint64_t) p[i + 3] << 32)) * 0xC4CEB9FE1A85EC53ull;
+	for (; i + 4 <= words; i += 4) {
+		__builtin_memcpy(w, p + 2 * i, sizeof(w));
+		c0 = __builtin_arm_crc32cd(c0, w[0]);
+		c1 = __builtin_arm_crc32cd(c1, w[1]);
+		c2 = __builtin_arm_crc32cd(c2, w[2]);
+		c3 = __builtin_arm_crc32cd(c3, w[3]);
 	}
-	for (; i < n; i++) {
-		a = (a ^ p[i]) * 0xFF51AFD7ED558CCDull;
+	for (; i < words; i++) {
+		__builtin_memcpy(w, p + 2 * i, sizeof(w[0]));
+		c0 = __builtin_arm_crc32cd(c0, w[0]);
 	}
-	return a ^ (b << 35 | b >> 29);
+	if (n & 1) {
+		c1 = __builtin_arm_crc32cw(c1, p[n - 1]);
+	}
+	return ((uint64_t) c0 << 32 | c1) ^ ((uint64_t) c2 << 32 | c3) * 0x9E3779B97F4A7C15ull;
 }
 
 struct RowJob {
@@ -1324,8 +1337,17 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
 			continue;
 		}
 		if (job->unscaled) {
-			/* not scaled at all */
-			memcpy(to + px0, pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4, (size_t) sw * 4);
+			/* not scaled at all; a row this buffer already holds is not written again (idle frames are mostly the same) */
+			const uint32_t * row = (const uint32_t *) (pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4);
+
+			if (sigs != NULL) {
+				sigs[y] = (placed ^ rowHash(row, (uint32_t) sw)) | 1;
+				if (sigs[y] == was) {
+					continue;
+				}
+			}
+			memcpy(to + px0, row, (size_t) sw * 4);
+			__atomic_fetch_add(&fFpsRows, 1, __ATOMIC_RELAXED);
 			continue;
 		}
 		if (filter) {
@@ -1743,13 +1765,6 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	fStatHeld += fSwapsWaiting >= swapQueue();
 	fFpsHeld += fSwapsWaiting >= swapQueue();
 	fFpsPresents++;
-	/* (read unlocked: the presenter's, a count only) */
-	if (gZeroCopy && swapWord(swap, SWAP_SURFACE(0)) != 0) {
-		MiniIOSurface * front = fZcFront, * pending = fZcPending;
-
-		fFpsZcOnPanel += (front != NULL && front->sid == swapWord(swap, SWAP_SURFACE(0))) ||
-		    (pending != NULL && pending->sid == swapWord(swap, SWAP_SURFACE(0)));
-	}
 	while (fSwapsWaiting >= swapQueue()) {
 		if (IOLockSleepDeadline(fSwapLock, &fSwapsWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT &&
 		    fSwapsWaiting >= swapQueue()) {
@@ -1767,8 +1782,20 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	memcpy(fSwap[slot], swap, SWAP_SIZE);
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 		uint32_t sid = swapWord(swap, SWAP_SURFACE(layer));
+		MiniIOSurface * held = sid != 0 ? MiniIOSurfaceCopy(sid) : NULL, * into;
 
-		fSwapSurfaces[slot][layer] = sid != 0 ? MiniIOSurfaceCopy(sid) : NULL;
+		/* (fb_zc: the frame was drawn into another surface, the panel reading this one: that one is what is shown) */
+		if (gZeroCopy && held != NULL && (into = MiniIOSurfaceDrawnInto(held)) != NULL) {
+			MiniIOSurfaceDrop(held);
+			held = into;
+			sid = held->sid;
+			memcpy(fSwap[slot] + SWAP_SURFACE(layer), &sid, sizeof(sid));
+		}
+		fSwapSurfaces[slot][layer] = held;
+		/* (read unlocked: the presenter's, a count only) */
+		if (gZeroCopy && layer == 0 && held != NULL) {
+			fFpsZcOnPanel += held == fZcFront || held == fZcPending;
+		}
 		if (sid != 0) {
 			/* (SCGPU: a frame drawn into this surface is shown by the host itself: bsd/dev/hakios.vgpu3d_xnu.c) */
 			hakios_vgpu3d_display_surface(sid);
@@ -2530,7 +2557,7 @@ IOMobileFramebuffer::fpsLine(void)
 {
 	uint32_t presents, lost, held, shown, flips, partial, same, undrawn, refreshes = hakios_scanout_refreshes(), refreshed;
 	uint32_t zc, zcCopied, zcBusy, missed, jobs = 0, mhz = 0, switches = 0;
-	uint32_t zcAgain, zcSurfaces, zcOnPanel, cpuFrames, cpuMask, waits, waitLast, waitBefore, waitOther, waitsSlept;
+	uint32_t rows, zcAgain, zcSurfaces, zcOnPanel, cpuFrames, cpuMask, waits, waitLast, waitBefore, waitOther, waitsSlept;
 	uint32_t waitsTimedOut;
 	uint64_t waitSlept;
 	uint64_t cpu, cpuMax;
@@ -2567,6 +2594,8 @@ IOMobileFramebuffer::fpsLine(void)
 	shown = fFpsShown;
 	flips = fFpsFlips;
 	partial = fFpsPartial;
+	rows = fFpsRows;
+	fFpsRows = 0;
 	draw = fFpsDraw;
 	drawMax = fFpsDrawMax;
 	wait = fFpsWait;
@@ -2595,10 +2624,10 @@ IOMobileFramebuffer::fpsLine(void)
 	if (presents != 0 || shown != 0) {
 		fFpsIdle = 0;
 		snprintf(line, sizeof(line), "fps: %u presented, %u drawn, %u flips, %u lost, %u held; drawing %llu us a frame, "
-		    "%llu at most; waiting for the flip before %llu us, %llu at most; %u refreshes; %u partial; %d refresh "
-		    "notifications sent; %u from the surface before, %u not done by the GPU; %s\n", presents, shown, flips, lost,
-		    held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? micros(wait) / shown : 0, micros(waitMax),
-		    refreshed, partial, (int) told, same, undrawn, mode);
+		    "%llu at most (%u rows a frame written); waiting for the flip before %llu us, %llu at most; %u refreshes; %u "
+		    "partial; %d refresh notifications sent; %u from the surface before, %u not done by the GPU; %s\n", presents,
+		    shown, flips, lost, held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? rows / shown : 0,
+		    shown ? micros(wait) / shown : 0, micros(waitMax), refreshed, partial, (int) told, same, undrawn, mode);
 		loader_log_line(line);
 		IOLog("%s", line);
 		/*

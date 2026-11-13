@@ -250,6 +250,14 @@ struct image {
 	size_t bytes;                   /* its surface's size (what the table holds alive: IMAGE_BYTES) */
 };
 
+/* A surface the display can read itself, with a texture that is its memory, and where its newest frame is (scan_target()) */
+#define SCAN_SURFACES   4
+struct scan {
+	IOSurfaceRef surface;
+	GLuint mirror;
+	uint32_t into;                  /* the surface its frame was drawn into; 0: itself */
+};
+
 struct eagl {
 	void *table[SLOTS];             /* [0] is the context itself: what every entry gets as its first argument */
 	id object;                      /* the EAGLContext */
@@ -326,8 +334,11 @@ struct eagl {
 	uint64_t upload_bytes, began, attaching, flushing;
 	/* everything so far */
 	unsigned frames, shaders, programs, errors, shared, refused, paced;
-	unsigned shown_waits, shown_timeouts;   /* target_to_surface(): blits held while the display read their surface */
+	struct scan scan[SCAN_SURFACES];        /* scan_target() */
+	unsigned scan_count;
+	unsigned shown_waits, shown_timeouts;   /* scan_target(): blits held while the display read every surface */
 	uint64_t shown_wait_us;
+	unsigned shown_elsewhere;               /* ... and frames drawn into another surface than their own */
 	uint64_t all_calls, all_draws, all_triangles, readback_us, wait_us, attach_us, flush_us, frame_us;
 	uint64_t checksum_calls, checksum_bytes, checksum_us, checksum_most;
 	unsigned most_calls, most_triangles;
@@ -532,12 +543,12 @@ summary(struct eagl *e)
 	    "%u calls, %u triangles; %llu us a frame, of which %llu handing the commands on, %llu waiting for the picture "
 	    "to be drawn and %llu copying it out, and before each %llu making textures of IOSurfaces; %u IOSurfaces were "
 	    "the textures' memory, %u had to be copied; %u shaders, %u programs; biggest texture %u x %u; %u errors; "
-	    "%u frames paced, not waited for; %u blits waited for the display to let go of their surface, %llu us each, %u "
-	    "of them in vain\n",
+	    "%u frames paced, not waited for; %u frames drawn into another surface than the one the display still read; "
+	    "%u blits waited for the display to let go of a surface, %llu us each, %u of them in vain\n",
 	    e->frames, e->all_calls / frames, e->all_draws / frames, e->all_triangles / frames, e->most_calls,
 	    e->most_triangles, e->frame_us / frames, e->flush_us / frames, e->wait_us / frames, e->readback_us / frames,
 	    e->attach_us / frames, e->shared, e->refused, e->shaders, e->programs, widest_texture, tallest_texture, e->errors,
-	    e->paced, e->shown_waits, e->shown_waits ? e->shown_wait_us / e->shown_waits : 0, e->shown_timeouts);
+	    e->paced, e->shown_elsewhere, e->shown_waits, e->shown_waits ? e->shown_wait_us / e->shown_waits : 0, e->shown_timeouts);
 	if (e->checksum_calls) {
 		say("hakios-gl-hash: calls=%llu bytes=%llu wall_us=%llu max_us=%llu\n",
 		    e->checksum_calls, e->checksum_bytes, e->checksum_us, e->checksum_most);
@@ -892,32 +903,39 @@ bytes_a_pixel(GLenum format, GLenum type)
 	}
 }
 
+/* A new texture that is a surface's memory; 0 if the library cannot. The texture that is bound is bound again after. */
+static GLuint
+surface_texture(struct eagl *e, IOSurfaceRef surface)
+{
+	GLint bound = 0;
+	GLuint texture = 0;
+
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+	glGenTextures(1, &texture);
+	glBindTexture(GL_TEXTURE_2D, texture);
+	if (!hakios_gl_surface_texture(e->gl, IOSurfaceGetID(surface))) {
+		glDeleteTextures(1, &texture);
+		texture = 0;
+	}
+	glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
+	return texture;
+}
+
 /*
  * For a surface drawn into (blit_targets): a second texture that is the surface's memory, for the
  * frame to be copied into by the GPU; the texture CoreAnimation draws into stays the library's own.
- * The texture that is bound is bound again after.
  */
 static bool
 surface_mirrored(struct eagl *e, struct image *image)
 {
 	IOSurfaceRef surface = image->surface;
-	GLint bound = 0;
 
 	if (!blit_targets || !share_surfaces || !image->target || image->alpha_first ||
 	    image->format != GL_BGRA || image->type != GL_UNSIGNED_BYTE || image->plane != 0 ||
-	    (size_t)image->width != IOSurfaceGetWidth(surface) || (size_t)image->height != IOSurfaceGetHeight(surface)) {
+	    (size_t)image->width != IOSurfaceGetWidth(surface) || (size_t)image->height != IOSurfaceGetHeight(surface) ||
+	    (image->mirror = surface_texture(e, surface)) == 0) {
 		return false;
 	}
-	glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
-	glGenTextures(1, &image->mirror);
-	glBindTexture(GL_TEXTURE_2D, image->mirror);
-	if (!hakios_gl_surface_texture(e->gl, IOSurfaceGetID(surface))) {
-		glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
-		glDeleteTextures(1, &image->mirror);
-		image->mirror = 0;
-		return false;
-	}
-	glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
 	e->shared++;
 	return true;
 }
@@ -1100,34 +1118,119 @@ surface_to_texture(struct eagl *e, struct image *image)
 
 static GLuint shown_texture;                    /* (glshow, below: show_texture()) */
 
+static struct scan *
+scan_add(struct eagl *e, IOSurfaceRef surface)
+{
+	struct scan *scan = &e->scan[e->scan_count];
+	CFTypeRef scanned = IOSurfaceCopyValue(surface, CFSTR("HakiosScanout"));
+
+	if (scanned == NULL) {
+		return NULL;
+	}
+	CFRelease(scanned);
+	if (e->scan_count == SCAN_SURFACES || (scan->mirror = surface_texture(e, surface)) == 0) {
+		return NULL;
+	}
+	scan->surface = (IOSurfaceRef)CFRetain(surface);
+	scan->into = 0;
+	e->scan_count++;
+	return scan;
+}
+
+/*
+ * fb_zc: the display controller reads a surface itself while it is on the panel or about to be, and its driver keeps
+ * the surface in use for that long (and says which surfaces it can read: their value "HakiosScanout"). CoreAnimation
+ * draws in turn into two, often into one the panel still reads: written then, the panel showed a frame torn between
+ * two; waited for, frames lost up to a refresh each (Note FE, 12 November). So a frame for a surface in use goes into
+ * another the panel is not reading -- CoreAnimation's other one, or one more made here -- and the display's driver is
+ * told which (the surface's value "HakiosDrawnInto", MiniIOSurfaceDrawnInto()). The surface to draw a target's frame
+ * into, NULL for its own. With all in use, two refreshes' wait at most, then drawn regardless.
+ */
+static struct scan *
+scan_target(struct eagl *e, IOSurfaceRef surface)
+{
+	struct scan *own = NULL, *into = NULL;
+	uint64_t began = now_us();
+	uint32_t id;
+
+	for (unsigned i = 0; i < e->scan_count; i++) {
+		if (IOSurfaceGetID(e->scan[i].surface) == IOSurfaceGetID(surface)) {
+			own = &e->scan[i];
+		}
+	}
+	if (!IOSurfaceIsInUse(surface) && (own == NULL || own->into == 0)) {
+		return NULL;
+	}
+	if (own == NULL && (own = scan_add(e, surface)) != NULL && e->scan_count == 1) {
+		/* the first of the display's found in use: one more like it */
+		int width = (int)IOSurfaceGetWidth(surface), height = (int)IOSurfaceGetHeight(surface), bytes = 4;
+		int row = (int)IOSurfaceGetBytesPerRow(surface), format = (int)IOSurfaceGetPixelFormat(surface);
+		const void *keys[] = { kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfaceBytesPerRow,
+			kIOSurfacePixelFormat };
+		const void *values[] = { CFNumberCreate(NULL, kCFNumberIntType, &width),
+			CFNumberCreate(NULL, kCFNumberIntType, &height), CFNumberCreate(NULL, kCFNumberIntType, &bytes),
+			CFNumberCreate(NULL, kCFNumberIntType, &row), CFNumberCreate(NULL, kCFNumberIntType, &format) };
+		CFDictionaryRef shape = CFDictionaryCreate(NULL, keys, values, 5, &kCFTypeDictionaryKeyCallBacks,
+		    &kCFTypeDictionaryValueCallBacks);
+		IOSurfaceRef spare = IOSurfaceCreate(shape);
+
+		if (spare != NULL) {
+			say("hakios-gl: a display surface more, %u like %u: %s\n", IOSurfaceGetID(spare), IOSurfaceGetID(surface),
+			    scan_add(e, spare) != NULL ? "frames go into whichever the display is not reading" :
+			    "not one the display reads itself, left unused");
+			CFRelease(spare);
+		}
+		CFRelease(shape);
+		for (unsigned i = 0; i < 5; i++) {
+			CFRelease(values[i]);
+		}
+	}
+	while (IOSurfaceIsInUse(surface)) {
+		for (unsigned i = 0; own != NULL && into == NULL && i < e->scan_count; i++) {
+			if (!IOSurfaceIsInUse(e->scan[i].surface)) {
+				into = &e->scan[i];
+			}
+		}
+		if (into != NULL || now_us() - began >= 34000) {
+			break;
+		}
+		usleep(250);
+	}
+	if (now_us() - began >= 250) {
+		e->shown_waits++;
+		e->shown_timeouts += into == NULL && IOSurfaceIsInUse(surface);
+		e->shown_wait_us += now_us() - began;
+	}
+	id = into != NULL ? IOSurfaceGetID(into->surface) : 0;
+	if (own != NULL && own->into != id) {
+		if (id == 0) {
+			IOSurfaceRemoveValue(surface, CFSTR("HakiosDrawnInto"));
+		} else {
+			CFNumberRef number = CFNumberCreate(NULL, kCFNumberSInt32Type, &id);
+
+			IOSurfaceSetValue(surface, CFSTR("HakiosDrawnInto"), number);
+			CFRelease(number);
+		}
+		own->into = id;
+	}
+	e->shown_elsewhere += into != NULL;
+	return into;
+}
+
 /* What has been drawn into a texture, into its IOSurface, unless it is there (frame_end() waits for it). */
 static void
 target_to_surface(struct eagl *e, struct image *image)
 {
 	IOSurfaceRef surface = image->surface;
 	size_t row = IOSurfaceGetBytesPerRow(surface);
+	struct scan *into = NULL;
 	uint8_t *base;
 
 	image->drawn = false;
 	if (image->mirror != 0) {
 		GLint read = 0, draw = 0;
 
-		/*
-		 * fb_zc: the display controller reads a surface itself while it is on the panel or about to be, and its driver
-		 * keeps the surface in use for that long. CoreAnimation draws in turn into two, the second while the first is
-		 * still shown: written then, the panel showed a frame torn between two (Note FE, 12 November: 30 to 52 frames
-		 * a second while swiping). Two refreshes at most, then drawn regardless.
-		 */
-		if (IOSurfaceIsInUse(surface)) {
-			uint64_t began = now_us();
-
-			while (IOSurfaceIsInUse(surface) && now_us() - began < 34000) {
-				usleep(250);
-			}
-			e->shown_waits++;
-			e->shown_timeouts += IOSurfaceIsInUse(surface);
-			e->shown_wait_us += now_us() - began;
-		}
+		into = scan_target(e, surface);
 		/* the frame into the surface's memory, by the GPU (blit_targets); upside down if it is drawn so */
 		glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
 		glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
@@ -1140,7 +1243,8 @@ target_to_surface(struct eagl *e, struct image *image)
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, e->reader);
 		glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, image->texture, 0);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->writer);
-		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, image->mirror, 0);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+		    into != NULL ? into->mirror : image->mirror, 0);
 		glBlitFramebuffer(0, 0, image->width, image->height, 0, image->invert ? image->height : 0, image->width,
 		    image->invert ? 0 : image->height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read);
@@ -1153,7 +1257,7 @@ target_to_surface(struct eagl *e, struct image *image)
 			IOSurfaceUnlock(surface, 0, NULL);
 		}
 		if (shown_texture == 0) {
-			hakios_gl_gpu_only(e->gl, IOSurfaceGetID(surface));
+			hakios_gl_gpu_only(e->gl, IOSurfaceGetID(into != NULL ? into->surface : surface));
 		}
 		return;
 	}
@@ -1721,7 +1825,7 @@ drawing(struct eagl *e)
 	frame_begin(e);
 	if (e->framebuffer != 0 && e->colour != 0 && (image = image_of(e, e->colour)) != NULL && image->target) {
 		image->drawn = image->painted = true;
-		if (frame_lines && image->width >= 1000 && image->height >= 2000) {
+		if (frame_lines && image->width >= 1000 && image->height >= 1800) {
 			/* the display's picture (a surface of its size): where this frame first draws into it */
 			e->line.into_display++;
 			if (!e->line.taken) {
@@ -4625,6 +4729,9 @@ my_dealloc(id self, SEL selector)
 		hakios_gl_destroy(e->gl);
 		for (unsigned i = 0; i < e->image_count; i++) {
 			CFRelease(e->images[i].surface);        /* (the textures, the mirrors among them, went with the library's context) */
+		}
+		for (unsigned i = 0; i < e->scan_count; i++) {
+			CFRelease(e->scan[i].surface);
 		}
 		free(e->images);
 		free(e->image_index);

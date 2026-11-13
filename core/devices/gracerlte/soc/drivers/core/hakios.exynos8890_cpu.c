@@ -134,6 +134,7 @@ hakios_psci_cpu_on_started(int cpu, uint32_t mpidr)
 	static vm_offset_t pmu;
 	uint32_t cluster = (mpidr >> 8) & 0xff, core = mpidr & 0xff, slot = cluster * 4 + core;
 	volatile uint32_t *config;
+	uint32_t before, status;
 	char line[160];
 
 	if (cluster > 1 || core > 3) {
@@ -145,10 +146,12 @@ hakios_psci_cpu_on_started(int cpu, uint32_t mpidr)
 		goto out;
 	}
 	config = (volatile uint32_t *)(pmu + CPU_CONFIGURATION(slot));
+	before = *config;
+	status = *(volatile uint32_t *)(pmu + CPU_STATUS(slot));
 	*config |= 0xF;
 	__asm__ volatile ("dsb sy" ::: "memory");
-	snprintf(line, sizeof(line), "exynos8890: cpu %d (MPIDR 0x%x) powered by the PMU: CONFIGURATION 0x%x STATUS 0x%x\n",
-	    cpu, mpidr, *config, *(volatile uint32_t *)(pmu + CPU_STATUS(slot)));
+	snprintf(line, sizeof(line), "exynos8890: cpu %d (MPIDR 0x%x) powered by the PMU: CONFIGURATION 0x%x -> 0x%x STATUS "
+	    "0x%x -> 0x%x\n", cpu, mpidr, before, *config, status, *(volatile uint32_t *)(pmu + CPU_STATUS(slot)));
 	say_clocks();
 out:
 	loader_log_line(line);

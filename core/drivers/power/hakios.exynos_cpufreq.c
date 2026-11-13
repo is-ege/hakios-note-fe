@@ -281,6 +281,40 @@ SYSCTL_PROC(_kern_hakios, OID_AUTO, gov_frame_big, CTLTYPE_INT | CTLFLAG_RW | CT
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
 
+/*
+ * kern.hakios.cpus: how many of the kernel's processors run. Writing N stops the highest-numbered ones down to N
+ * (PSCI CPU_OFF) or starts them again; the first always runs.
+ */
+extern int processor_exit(void *processor), processor_start(void *processor);
+static int
+cpus_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
+{
+	int all = (int)MIN(ml_get_topology_info()->num_cpus, MAX_CPUS), running = 0, wanted, error;
+	uint64_t idle;
+
+	for (int i = 0; i < all; i++) {
+		running += ml_cpu_idle_time(i, &idle);
+	}
+	wanted = running;
+	error = sysctl_io_number(req, wanted, sizeof(wanted), &wanted, NULL);
+	if (error != 0 || req->newptr == 0) {
+		return error;
+	}
+	if (wanted < 1 || wanted > all) {
+		return EINVAL;
+	}
+	for (int i = all - 1; i > 0; i--) {
+		if ((i < wanted) != ml_cpu_idle_time(i, &idle)) {
+			int r = i < wanted ? processor_start(cpu_to_processor(i)) : processor_exit(cpu_to_processor(i));
+
+			say("cpufreq_gov: cpu %d %s: %d (kern.hakios.cpus=%d)\n", i, i < wanted ? "started" : "stopped", r, wanted);
+		}
+	}
+	return 0;
+}
+SYSCTL_PROC(_kern_hakios, OID_AUTO, cpus, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, NULL, 0,
+    cpus_sysctl, "I", "how many processors run; writing stops or starts the highest-numbered");
+
 static bool
 ever_idle_cpu(unsigned int i)
 {

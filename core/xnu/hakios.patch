@@ -119,10 +119,10 @@ index 4b83160780c3..8997af1f0e1b 100644
  include $(MakeInc_rule)
  include $(MakeInc_dir)
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 44274016a4cf..2157d63486c4 100644
+index 44274016a4cf..5eb1d31c3163 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,100 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -109,6 +109,101 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c optional monotonic
@@ -191,6 +191,7 @@ index 44274016a4cf..2157d63486c4 100644
 +bsd/dev/hakios.cpufreq.c                 optional hakios_cpufreq
 +bsd/dev/hakios.thermal.c                 optional hakios_thermal
 +bsd/dev/hakios.pmic.c                    optional hakios_pmic
++bsd/dev/hakios.pmic_rtc.c                optional hakios_pmic_rtc
 +bsd/dev/hakios.s2mps18_rtc.c             optional hakios_s2mps18_rtc
 +bsd/dev/hakios.battguard.c               optional hakios_battguard
 +bsd/dev/hakios.exynos_cpufreq.c          optional hakios_exynos_cpufreq
@@ -223,7 +224,7 @@ index 44274016a4cf..2157d63486c4 100644
  bsd/dev/dev_perfmon.c optional config_perfmon
  
  bsd/libkern/crc32.c			standard
-@@ -155,6 +249,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
+@@ -155,6 +250,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
  bsd/miscfs/mockfs/mockfs_fsnode.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vfsops.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vnops.c	optional mockfs
@@ -276,7 +277,7 @@ index 44274016a4cf..2157d63486c4 100644
  
  bsd/miscfs/routefs/routefs_ops.c	optional routefs
  
-@@ -361,6 +501,7 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -361,6 +502,7 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -284,7 +285,7 @@ index 44274016a4cf..2157d63486c4 100644
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
  
-@@ -383,6 +524,7 @@ bsd/kern/kern_debug.c			standard
+@@ -383,6 +525,7 @@ bsd/kern/kern_debug.c			standard
  bsd/kern/kern_symfile.c			standard
  bsd/kern/kern_descrip.c			standard
  bsd/kern/kern_guarded.c			standard
@@ -2699,6 +2700,23 @@ index ee9f8de75a64..dde43b297a90 100644
  
  	if ((pfr1 & ID_AA64PFR1_EL1_SSBS_MASK) >= ID_AA64PFR1_EL1_SSBS_EN) {
  		gARM_FEAT_SSBS = 1;
+diff --git a/osfmk/arm/cpu_common.c b/osfmk/arm/cpu_common.c
+index abf7ec7826e8..845425df818b 100644
+--- a/osfmk/arm/cpu_common.c
++++ b/osfmk/arm/cpu_common.c
+@@ -875,6 +875,12 @@ ml_cpu_can_exit(__unused int cpu_id, processor_reason_t reason)
+ 	if (CpuDataEntries[cpu_id].cpu_data_vaddr != &BootCpuData) {
+ 		return true;
+ 	}
++#elif defined(GENERIC_PSCI_SMP)
++	(void)reason;
++	/* PSCI CPU_OFF, and CPU_ON again (kern.hakios.cpus) */
++	if (cpu_id != master_cpu) {
++		return true;
++	}
+ #else
+ 	(void)reason;
+ #endif
 diff --git a/osfmk/arm/machine_routines.h b/osfmk/arm/machine_routines.h
 index d04ecfa99982..bb324bf4d7f4 100644
 --- a/osfmk/arm/machine_routines.h
@@ -3267,7 +3285,7 @@ index 94e91306b143..a81111c70dc8 100644
  
  void
 diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
-index e76e7e70ab9c..903381244692 100644
+index e76e7e70ab9c..602493cf7f48 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
 @@ -734,6 +734,11 @@ ml_get_machine_mem(void)
@@ -3294,7 +3312,7 @@ index e76e7e70ab9c..903381244692 100644
  	while (1) {
  		;
  	}
-@@ -932,6 +942,101 @@ ml_read_chip_revision(unsigned int *rev __unused)
+@@ -932,6 +942,105 @@ ml_read_chip_revision(unsigned int *rev __unused)
  #endif
  }
  
@@ -3376,7 +3394,10 @@ index e76e7e70ab9c..903381244692 100644
 +	}
 +}
 +
-+/* How long processor cpu_id has been idle since it started, in mach_absolute_time() units (hakios.cpufreq.c's cpuload). */
++/*
++ * How long processor cpu_id has been idle since it started, in mach_absolute_time() units (hakios.cpufreq.c's cpuload).
++ * False for a processor that is stopped (kern.hakios.cpus).
++ */
 +bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
 +
 +bool
@@ -3384,7 +3405,8 @@ index e76e7e70ab9c..903381244692 100644
 +{
 +	struct recount_usage usage = { 0 };
 +
-+	if (cpu_id < 0 || cpu_id >= MAX_SCHED_CPUS || processor_array[cpu_id] == PROCESSOR_NULL) {
++	if (cpu_id < 0 || cpu_id >= MAX_SCHED_CPUS || processor_array[cpu_id] == PROCESSOR_NULL ||
++	    processor_array[cpu_id]->state == PROCESSOR_OFF_LINE) {
 +		return false;
 +	}
 +	recount_processor_usage(&processor_array[cpu_id]->pr_recount, &usage, idle);
@@ -3396,7 +3418,7 @@ index e76e7e70ab9c..903381244692 100644
  void
  ml_parse_cpu_topology(void)
  {
-@@ -945,6 +1050,7 @@ ml_parse_cpu_topology(void)
+@@ -945,6 +1054,7 @@ ml_parse_cpu_topology(void)
  	int64_t cluster_max_cpu_phys_id[MAX_CPU_CLUSTER_PHY_ID + 1];
  	const boolean_t cpus_boot_arg_present = PE_parse_boot_argn("cpus", &cpu_boot_arg, sizeof(cpu_boot_arg));
  	const boolean_t cpumask_boot_arg_present = PE_parse_boot_argn("cpumask", &cpumask_boot_arg, sizeof(cpumask_boot_arg));
@@ -3404,7 +3426,7 @@ index e76e7e70ab9c..903381244692 100644
  
  	// The cpus=N and cpumask=N boot args cannot be used simultaneously. Flag this
  	// so that we trigger a panic later in the boot process, once serial is enabled.
-@@ -1005,6 +1111,20 @@ ml_parse_cpu_topology(void)
+@@ -1005,6 +1115,20 @@ ml_parse_cpu_topology(void)
  		cpu->phys_id = (uint32_t)ml_readprop(child, "reg", ML_READPROP_MANDATORY);
  
  		cpu->l2_access_penalty = (uint32_t)ml_readprop(child, "l2-access-penalty", 0);
@@ -3425,7 +3447,7 @@ index e76e7e70ab9c..903381244692 100644
  		cpu->l2_cache_size = (uint32_t)ml_readprop(child, "l2-cache-size", 0);
  		cpu->l2_cache_id = (uint32_t)ml_readprop(child, "l2-cache-id", 0);
  		cpu->l3_cache_size = (uint32_t)ml_readprop(child, "l3-cache-size", 0);
-@@ -1107,6 +1227,8 @@ ml_parse_cpu_topology(void)
+@@ -1107,6 +1231,8 @@ ml_parse_cpu_topology(void)
  	cluster_offsets[0] = 0;
  #endif
  	assert(topology_info.boot_cpu != NULL);
@@ -3434,7 +3456,7 @@ index e76e7e70ab9c..903381244692 100644
  	ml_read_chip_revision(&topology_info.chip_revision);
  
  	/*
-@@ -1180,6 +1302,38 @@ ml_get_boot_cluster_type(void)
+@@ -1180,6 +1306,38 @@ ml_get_boot_cluster_type(void)
  	return topology_info.boot_cluster->cluster_type;
  }
  
@@ -3473,7 +3495,7 @@ index e76e7e70ab9c..903381244692 100644
  int
  ml_get_cpu_number(uint32_t phys_id)
  {
-@@ -1215,7 +1369,7 @@ ml_get_cpu_number_local(void)
+@@ -1215,7 +1373,7 @@ ml_get_cpu_number_local(void)
  
  	/* We identify the CPU based on the constant bits of MPIDR_EL1. */
  	MRS(mpidr_el1_value, "MPIDR_EL1");
@@ -3482,7 +3504,7 @@ index e76e7e70ab9c..903381244692 100644
  
  	assert(cpu_id <= (unsigned int)ml_get_max_cpu_number());
  
-@@ -1230,7 +1384,7 @@ ml_get_cluster_number_local()
+@@ -1230,7 +1388,7 @@ ml_get_cluster_number_local()
  
  	/* We identify the cluster based on the constant bits of MPIDR_EL1. */
  	MRS(mpidr_el1_value, "MPIDR_EL1");
@@ -3491,7 +3513,7 @@ index e76e7e70ab9c..903381244692 100644
  
  	assert(cluster_id <= (unsigned int)ml_get_max_cluster_number());
  
-@@ -1427,17 +1581,15 @@ ml_processor_register(ml_processor_info_t *in_processor_info,
+@@ -1427,17 +1585,15 @@ ml_processor_register(ml_processor_info_t *in_processor_info,
  	processor_t processor = PERCPU_GET_RELATIVE(processor, cpu_data, this_cpu_datap);
  	if (!is_boot_cpu) {
  		processor_init(processor, this_cpu_datap->cpu_number, pset);
@@ -3517,7 +3539,7 @@ index e76e7e70ab9c..903381244692 100644
  
  	*processor_out = processor;
  	*ipi_handler_out = cpu_signal_handler;
-@@ -2237,8 +2389,16 @@ _enable_virtual_timer(void)
+@@ -2237,8 +2393,16 @@ _enable_virtual_timer(void)
  	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
  
  	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);

@@ -724,6 +724,11 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 	s->kbase = (uint8_t *) s->memory->getBytesNoCopy();
 	s->values = OSDictionary::withCapacity(4);
 	s->kpixels = s->scanPhys != 0 ? (uint8_t *) s->scanMap->getVirtualAddress() : s->kbase + PAGE_SIZE;
+	if (s->scanPhys != 0) {
+		/* (for the GPU's library: a surface the display can read itself, see MiniIOSurfaceDrawnInto()) */
+		s->values->setObject("HakiosScanout", kOSBooleanTrue);
+		s->updateValuesState();
+	}
 	if (s->scanPhys != 0 && gScanoutMade++ < 16) {
 		IOLog("MiniIOSurface: fb_zc: a display surface (%ux%u, %u bytes a row, %u bytes) made of the scan-out pool at "
 		    "%#llx\n", width, height, bpr, alloc, s->scanPhys);
@@ -842,6 +847,24 @@ MiniIOSurfaceCopy(uint32_t sid)
 	}
 	IOLockLock(gSurfaceLock);
 	s = gSurfaceTable[sid];
+	if (s != NULL) {
+		surfaceHold(s);
+	}
+	IOLockUnlock(gSurfaceLock);
+	return s;
+}
+
+MiniIOSurface *
+MiniIOSurfaceDrawnInto(MiniIOSurface * surface)
+{
+	MiniIOSurface * s = NULL;
+	OSNumber * into;
+
+	IOLockLock(gSurfaceLock);
+	into = surface->values != NULL ? OSDynamicCast(OSNumber, surface->values->getObject("HakiosDrawnInto")) : NULL;
+	if (into != NULL && into->unsigned32BitValue() < MINISURF_TABLE_SIZE) {
+		s = gSurfaceTable[into->unsigned32BitValue()];
+	}
 	if (s != NULL) {
 		surfaceHold(s);
 	}

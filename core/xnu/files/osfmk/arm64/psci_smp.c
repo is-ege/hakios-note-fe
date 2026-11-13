@@ -554,6 +554,7 @@ psci_smp_cpu_off(void)
 	__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_IMASKED);
 	gic_v3_irq_cpu_shutdown();
 	os_atomic_store(&psci_smp_cpu_stage[cpu_number()], PSCI_SMP_CPU_OFF, release);
+	getCpuDatap()->cpu_sleep_token = ARM_CPU_ON_SLEEP_PATH;   /* what cpu_exit_wait() waits for */
 	__builtin_arm_dsb(DSB_SY);
 
 	(void) psci_call(PSCI_CPU_OFF, 0, 0, 0);

@@ -177,6 +177,17 @@ gic_v2_sgis_clear(void)
 	}
 }
 
+/* GICD_IROUTER for this processor: Aff3 in [39:32], Aff2.Aff1.Aff0 in [23:0]; bit 31 (any processor) clear */
+static uint64_t gic_boot_router;        /* ... and the boot processor's, where a stopped one's interrupts go */
+
+static uint64_t
+gic_router(void)
+{
+	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
+
+	return (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
+}
+
 static void
 gic_mask(uint32_t intid)
 {
@@ -285,7 +296,6 @@ gic_v3_spi_unmask(uint32_t intid)
 kern_return_t
 gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context)
 {
-	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
 	struct gic_spi *slot = NULL;
 	uint32_t config;
 
@@ -327,8 +337,7 @@ gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint
 		/* GICD_ITARGETSR: a byte per interrupt, a bit per CPU interface */
 		*(volatile uint8_t *)(gicd_base + GICD_ITARGETSR(intid)) = gic_v2_target[cpu_number()];
 	} else {
-		/* GICD_IROUTER: Aff3 in [39:32], Aff2.Aff1.Aff0 in [23:0]; bit 31 (any processor) clear */
-		*(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
+		*(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = gic_router();
 	}
 	gic_distributor_settle();
 	gic_v3_spi_unmask(intid);
@@ -413,29 +422,12 @@ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub
 	}
 }
 
-/*
- * Leave the controller in a state another environment can take over from:
- * finish any interrupt that this processor acknowledged but did not complete.
- * Used when control goes back to the boot loader (see loader_return.c), and
- * by a processor that is about to be switched off for that (psci_smp.c).
- */
-void
-gic_v3_irq_quiesce(void)
+/* This processor's own part of leaving: its software interrupts, and the interrupt it acknowledged and did not complete. */
+static void
+gic_cpu_finish(void)
 {
-	int cpu;
+	int cpu = cpu_number();
 
-	if (gicd_base == 0) {
-		return;         /* as early as this there is no interrupt, nor a cpu number to ask for */
-	}
-	cpu = cpu_number();
-	/* (what drivers had of the shared interrupts goes with this kernel: none of them may fire under the loader) */
-	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
-		uint32_t intid = gic_spi[i].intid;
-
-		if (intid != 0) {
-			gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
-		}
-	}
 	if (gic_v2) {
 		gic_v2_sgis_clear();
 	}
@@ -451,6 +443,29 @@ gic_v3_irq_quiesce(void)
 }
 
 /*
+ * Leave the controller in a state another environment can take over from:
+ * finish any interrupt that this processor acknowledged but did not complete.
+ * Used when control goes back to the boot loader (see loader_return.c), and
+ * by a processor that is about to be switched off for that (psci_smp.c).
+ */
+void
+gic_v3_irq_quiesce(void)
+{
+	if (gicd_base == 0) {
+		return;         /* as early as this there is no interrupt, nor a cpu number to ask for */
+	}
+	/* (what drivers had of the shared interrupts goes with this kernel: none of them may fire under the loader) */
+	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+		uint32_t intid = gic_spi[i].intid;
+
+		if (intid != 0) {
+			gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
+		}
+	}
+	gic_cpu_finish();
+}
+
+/*
  * This processor is leaving for good: the firmware is about to be asked to switch it off
  * (psci_smp_cpu_off(), and the boot processor in the loader's stub when the kernel has a core of
  * its own). Nothing may be left that could interrupt it. The redistributor outlives the core, and
@@ -463,20 +478,46 @@ void
 gic_v3_irq_cpu_shutdown(void)
 {
 	vm_offset_t gicr;
+	int cpu = cpu_number();
 
 	if (gicd_base == 0) {
 		return;
 	}
-	gic_v3_irq_quiesce();
+	gic_cpu_finish();
+	/*
+	 * The kernel may be running on (kern.hakios.cpus): the shared interrupts that come to this processor go to the
+	 * boot processor, and gic_v3_irq_cpu_init() is to set this one up again if it is started again.
+	 */
+	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
+		uint32_t intid = gic_spi[i].intid;
+
+		if (intid == 0 || cpu == master_cpu) {
+			continue;
+		}
+		if (gic_v2) {
+			volatile uint8_t *target = (volatile uint8_t *)(gicd_base + GICD_ITARGETSR(intid));
+
+			if (*target == gic_v2_target[cpu]) {
+				*target = gic_v2_target[master_cpu];
+			}
+		} else {
+			volatile uint64_t *router = (volatile uint64_t *)(gicd_base + GICD_IROUTER(intid));
+
+			if (*router == gic_router()) {
+				*router = gic_boot_router;
+			}
+		}
+	}
 	if (gic_v2) {
 		/* interrupts 0-31 in the distributor are this processor's own */
 		gic_write32(gicd_base + GICD_ICENABLER(0), 0xffffffffu);
 		gic_write32(gicd_base + GICD_ICPENDR(0), 0xffffffffu);
 		gic_write32(gicd_base + GICD_ICACTIVER(0), 0xffffffffu);
 		gic_write32(gicc_base + GICC_CTLR, gic_read32(gicc_base + GICC_CTLR) & ~GICC_CTLR_ENABLE);
+		os_atomic_store(&gic_v2_target[cpu], 0, release);
 		return;
 	}
-	gicr = gicr_cpu_base[cpu_number()];
+	gicr = gicr_cpu_base[cpu];
 	if (gicr != 0) {
 		gic_write32(gicr + GICR_ICENABLER0, 0xffffffffu);
 		gic_write32(gicr + GICR_ICPENDR0, 0xffffffffu);
@@ -484,6 +525,7 @@ gic_v3_irq_cpu_shutdown(void)
 	}
 	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0);
 	__builtin_arm_isb(ISB_SY);
+	gicr_cpu_base[cpu] = 0;
 }
 
 static vm_offset_t
@@ -622,6 +664,9 @@ gic_v3_irq_cpu_init(void)
 	__builtin_arm_isb(ISB_SY);
 
 	gicr = gicr_cpu_base[cpu] = gic_find_redistributor();
+	if (cpu == master_cpu) {
+		gic_boot_router = gic_router();
+	}
 
 	uint32_t waker = gic_read32(gicr + GICR_WAKER);
 	if (waker & (GICR_WAKER_PROCSLEEP | GICR_WAKER_CHILDASLEEP)) {

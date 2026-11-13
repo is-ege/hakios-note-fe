@@ -425,6 +425,38 @@ vibration → install-on-flash release flow (BOOT + SYSTEM, return timer kept). 
   the timing the S6SY661 runs on, and the touch screen saw fingers nobody put down (T184419, T184949; none with the
   panel awake, T190010); Samsung's settings after sleep-out (B9 H-sync, CE FFC) took the panel off its scaler (it
   showed the loader's screen, T185335). The DECON's clocks and the DSIM stay on while dark.
+- **Idle copy cost looked at, 2026-11-13 (runs 20261113T120204 to T121458).** Idle on page one is the Clock icon's
+  second hand: 10 frames a second, each a full redraw (eagl's `glframes=1`: 19 draws, no scissor), ~65 of 1840 rows
+  changed. Over 60 s: backboardd 14.7%, kernel_task 15.4% of a core, of which the copy ("frames to the panel" and its
+  two helpers) 9.8%. Done: a row a scan-out buffer already holds is not written again (fScanSig, as the scaled path
+  had), and rowHash is CRC32C: a frame 3.4 -> 2.7 ms at 728 MHz, swiping 1.25 -> 1.16 ms. It is reading the frame
+  that costs (~3 GB/s at idle clocks), so no row check gets further; that needs knowing the changed rows (CoreAnimation
+  draws everything) or zero-copy (undone 2026-11-12). Freezing the second hand would save ~25% of a core: Ege keeps it
+  ticking. fps_log's first line says how many rows a frame were written.
+- **Done 2026-11-13: zero-copy again, with a third surface (runs 20261113T205050; Ege asked for another attempt).**
+  fb_zc back on (exynos8890.config). What cost the frames on 12 November was only eagl's wait for the surface the
+  panel still read (the "readback" was the attaches at start-up, 2.8 s in all, not a cost a frame). Now eagl draws a
+  frame for a surface in use into another the panel is not reading: CoreAnimation's other one, or one more it makes
+  itself (`scan_target`, eagl.c), and names it in the surface's value "HakiosDrawnInto"; SwapEnd shows that one
+  (`MiniIOSurfaceDrawnInto`). The kernel marks pool surfaces "HakiosScanout". Same 24-stroke swipe: 56-59 fps, 0
+  copied, 0 drawn into the one on the panel, render thread 10.4 ms (copied: 55-60, 10.9 ms); a blit still waits
+  when all three are busy (one frame in five, 3 ms: the renderer two frames ahead). Idle on page one over 60 s:
+  kernel_task 15.4% -> 4.4%, all processes 34.2% -> 23.6% of a core. The pool's third slot is the spare's now:
+  backboardd's third display-sized surface (121) is ordinary memory. A display surface's memory may hold the other
+  one's frame (a texture attached again starts from it; CoreAnimation draws every frame whole). Ege: "Works well, feels nicer."
+- **Sleep, begun 2026-11-13 (runs 20261113T212425, T213215).** Locked, the phone takes ~1.3 W (the battery gets
+  +224 mA of the computer's 500 mA; ~380 mA at 3.7 V if unplugged, ~8 h), the screen on ~1.8 W; the processors are 99%
+  idle, so it is what stays powered, not what runs. Wi-Fi already saves power (brcmfmac's PM_FAST). `kern.hakios.cpus=N`
+  stops and starts the M1s (processor_exit -> PSCI CPU_OFF, CPU_ON; console `sysctl`): three stopped save ~10 mA
+  only, and the PMU's CPU_CONFIGURATION stays 0xF (the firmware's CPU_OFF does not take the core's power). What it
+  took, all needed for a real sleep too: ml_cpu_can_exit() for the other cores, the token cpu_exit_wait() waits for,
+  and the GIC (a stopping core disabled every shared interrupt and was not set up again when restarted: the kernel
+  went silent seconds later; now its shared interrupts go to the boot processor). `button lock` on the console locks.
+  Samsung's way (drivers/soc/samsung: exynos-pm.c, exynos-powermode.c, pwrcal/S5E8890/S5E8890-syspwr.c): the last
+  core calls PSCI CPU_SUSPEND with affinity level 3 after the PMU's SLEEP table, the wake-up masks and ~1200 saved
+  clock registers; C2 clears the core's CPU_CONFIGURATION before a power-down CPU_SUSPEND. Not known yet: what the
+  1.3 W is (candidates: every power domain S-Boot leaves on, MIF at 1794 MHz, the GPU, UFS and PCIe links never
+  idle, the DSIM and panel only blanked, the loader's A53).
 - **Done 2026-11-12: the GPU no higher than 546 MHz (device 87c67f9, core 1e536cf).** Ege: the frame rate had
   dropped, even swiping the home screen. Samsung's table locks the big cores to 1560 MHz while the G3D runs above
   600; the poster wallpaper's heavier frames (GPU 5.1 -> 6.3 ms) made mali_gov take 650 most of the time, so the

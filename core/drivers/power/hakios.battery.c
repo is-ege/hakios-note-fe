@@ -55,7 +55,7 @@ SYSCTL_INT(_kern_hakios, OID_AUTO, battery_soc, CTLFLAG_RD | CTLFLAG_LOCKED,
     &battery_soc_percent, 0, "battery state of charge, 0..100 percent, or -1 if unknown");
 SYSCTL_INT(_kern_hakios, OID_AUTO, battery_voltage_mv, CTLFLAG_RD | CTLFLAG_LOCKED,
     &battery_voltage_mv, 0, "battery voltage in millivolts, or -1 if unknown");
-SYSCTL_INT(_kern_hakios, OID_AUTO, battery_current_ma, CTLFLAG_RD | CTLFLAG_LOCKED,
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_current_ma, CTLFLAG_RD | CTLFLAG_LOCKED | CTLFLAG_KERN,
     &battery_current_ma, 0, "battery current reported by Qualcomm firmware, in milliamps");
 SYSCTL_INT(_kern_hakios, OID_AUTO, battery_temperature_c, CTLFLAG_RD | CTLFLAG_LOCKED,
     &battery_temperature_c, 0, "battery temperature reported by Qualcomm firmware, in Celsius");
