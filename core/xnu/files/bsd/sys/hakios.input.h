@@ -44,6 +44,7 @@ void hakios_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Go
 void hakios_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
 void hakios_exynos_keys_init(void);    /* boot-arg exynos_keys=1: the Galaxy S9's keys (GPIO) */
 void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's touch screen (I2C) */
+void hakios_s6sy761_display(bool on);  /* the display on or off (the Note FE's display driver) */
 void hakios_s6e3ha8_init(void);        /* boot-arg panel=1: the Galaxy S9's panel brightness (kern.hakios.brightness) */
 void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its flashlight (/dev/hakios-torch) */
 void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */

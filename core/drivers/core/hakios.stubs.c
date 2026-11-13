@@ -130,6 +130,7 @@ void hakios_exynos_keys_init(void) {}
 #endif
 #ifndef HAKIOS_S6SY761
 void hakios_s6sy761_init(void) {}
+void hakios_s6sy761_display(bool on) { (void)on; }
 #endif
 #ifndef HAKIOS_MAX77705
 void hakios_max77705_init(void) {}
@@ -257,6 +258,8 @@ int hakios_scanout_carve(__unused uint64_t bytes, __unused uint64_t *phys) { ret
 void hakios_scanout_uncarve(__unused uint64_t phys) {}
 int hakios_scanout_carved(__unused uint64_t phys) { return 0; }
 int hakios_scanout_show(__unused uint64_t phys, __unused uint32_t rowbytes) { return -1; }
+int hakios_scanout_power(int on);
+int hakios_scanout_power(__unused int on) { return -1; }
 #endif
 
 #ifndef HAKIOS_USB_GADGET

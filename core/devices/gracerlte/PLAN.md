@@ -416,8 +416,15 @@ vibration → install-on-flash release flow (BOOT + SYSTEM, return timer kept). 
   read only), right to the second, and /private/var was emptied once (Ege approved): ~6% of one core at idle, 728 MHz,
   48 C. (3) The loader's A53 spun for the whole run; it now waits with WFE on the timer's event stream (~1 ms) once
   it only watches. ufs_native_ro=1 left the device config (mkboot.sh no longer overrides it: room on the command line).
-  Still open: the panel stays on at 60 Hz while locked (iOS blanks it and stops drawing, but kFBMethodRequestPowerChange
-  is ignored: the DECON and DSIM keep refreshing); no system sleep.
+  Still open: no system sleep.
+- **Done 2026-11-12: the display off while locked (run 20261112T192556; Ege: phantom touches gone).** iOS's
+  kFBMethodRequestPowerChange (backboardd: 0 at "Set Blanked: YES", 1 at unblank, once each at start-up) now reaches
+  hakios_scanout_power: the frame in flight finished, the DECON's trigger masked (no frames, no vsync from the
+  framebuffer), the panel's display off (28), the touch chip's sense off and not polled; back on: frames, display on
+  (29) after the first, sense on. Locked: big cores 728 MHz, ~1% load. Not sleep-in (10): asleep, the S6E3HA5 stops
+  the timing the S6SY661 runs on, and the touch screen saw fingers nobody put down (T184419, T184949; none with the
+  panel awake, T190010); Samsung's settings after sleep-out (B9 H-sync, CE FFC) took the panel off its scaler (it
+  showed the loader's screen, T185335). The DECON's clocks and the DSIM stay on while dark.
 - **Done 2026-11-12: the GPU no higher than 546 MHz (device 87c67f9, core 1e536cf).** Ege: the frame rate had
   dropped, even swiping the home screen. Samsung's table locks the big cores to 1560 MHz while the G3D runs above
   600; the poster wallpaper's heavier frames (GPU 5.1 -> 6.3 ms) made mali_gov take 650 most of the time, so the

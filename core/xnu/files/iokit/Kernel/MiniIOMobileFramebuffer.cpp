@@ -520,6 +520,7 @@ int hakios_mali_bind_current_cpu(int cpu);
 int hakios_scanout_latched(void);
 void hakios_scanout_detach(const char * why);
 uint32_t hakios_scanout_refreshes(void);
+int hakios_scanout_power(int on);
 void loader_log_line(const char * line);
 void flush_dcache64(addr64_t addr, unsigned count, int phys);
 vm_offset_t ml_vtophys(vm_offset_t vaddr);
@@ -2964,6 +2965,7 @@ class IOMobileFramebufferUserClient : public IOUserClient
 	uint64_t                fVSyncCount;
 	uint64_t                fVSyncTime;             /* when the refresh being waited for is due */
 	bool                    fVSyncRunning;
+	bool                    fDark;                  /* this client turned the display off: no refreshes to tell */
 	bool                    fClosed;
 
 	static void vsyncFired(thread_call_param_t self, thread_call_param_t unused);
@@ -3095,7 +3097,7 @@ IOMobileFramebufferUserClient::vsync(void)
 
 	IOLockLock(fLock);
 	now = fVSyncTime;
-	if (fClosed || fCallbacks[kFBNotifyVSync] == 0 || fPorts[kFBNotifyVSync] == NULL) {
+	if (fClosed || fDark || fCallbacks[kFBNotifyVSync] == 0 || fPorts[kFBNotifyVSync] == NULL) {
 		fVSyncRunning = false;
 	} else {
 		fVSyncCount++;
@@ -3216,9 +3218,27 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	case kFBMethodSwapSignal:
 	case kFBMethodSwapCancel:
 	case kFBMethodSwapCancelAll:
-	case kFBMethodRequestPowerChange:
 	case kFBMethodChangeFrameInfo:
 		return kIOReturnSuccess;
+
+	case kFBMethodRequestPowerChange: {             /* in: 0 the display off (backboardd's blank: the lock), else on */
+		char line[160], procname[32] = "?";
+		bool dark = args->scalarInputCount >= 1 && in[0] == 0;
+		int r = hakios_scanout_power(!dark);
+
+		proc_selfname(procname, sizeof(procname));
+		snprintf(line, sizeof(line), "MiniIOMobileFramebuffer: %s asks for the display %s (%llu): %s\n", procname,
+		    dark ? "off" : "on", args->scalarInputCount >= 1 ? in[0] : 0, r == 0 ? "done" : "the panel stays as it is");
+		loader_log_line(line);
+		IOLockLock(fLock);
+		fDark = dark && r == 0;                 /* (where the display cannot go off, refreshes go on as before) */
+		if (!dark && fCallbacks[kFBNotifyVSync] != 0 && !fVSyncRunning && !fClosed) {
+			fVSyncRunning = true;
+			armVSync();
+		}
+		IOLockUnlock(fLock);
+		return kIOReturnSuccess;
+	}
 
 	case kFBMethodNotifications:                    /* in: callback (0 = off), its argument, type, 0 */
 		if (args->scalarInputCount < 3 || in[2] >= kFBNotifyTypes) {
@@ -3227,7 +3247,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		IOLockLock(fLock);
 		fCallbacks[in[2]] = in[0];
 		fRefcons[in[2]] = in[1];
-		if (in[2] == kFBNotifyVSync && in[0] != 0 && !fVSyncRunning && !fClosed) {
+		if (in[2] == kFBNotifyVSync && in[0] != 0 && !fVSyncRunning && !fClosed && !fDark) {
 			fVSyncRunning = true;
 			armVSync();
 		}

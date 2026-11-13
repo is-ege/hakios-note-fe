@@ -92,6 +92,7 @@ int hakios_scanout_carve(uint64_t bytes, uint64_t *phys);
 void hakios_scanout_uncarve(uint64_t phys);
 int hakios_scanout_carved(uint64_t phys);
 int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
+int hakios_scanout_power(int on);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -439,6 +440,13 @@ int
 hakios_scanout_latched(void)
 {
 	return probed > 0 && (rd(decon, SHADOW_REQ) & SHADOW_ALL) == 0;
+}
+
+/* iOS's display off and on: not on the S9 (its panel goes dark only for a halt, hakios_s6e3ha8_blank); frames go on */
+int
+hakios_scanout_power(__unused int on)
+{
+	return -1;
 }
 
 int

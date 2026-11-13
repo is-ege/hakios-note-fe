@@ -52,6 +52,9 @@
  * hakios.exynos_acpm.c), each read back, in Android's order (sec_ts.c sec_ts_power(): LDO43 off, 4 ms, LDO35 off;
  * LDO35 on, 1 ms, LDO43 on): off for 2 s, on, then the chip is asked every 500 ms for 12 s; three cycles at most.
  * Boot-arg s6sy761_ldo=0: never.
+ *
+ * The Note FE's display off (hakios_s6sy761_display, from its display driver): sense off and nothing read while dark,
+ * sense on once the display is on. Samsung switches the chip's supplies off with the display (sec_ts_input_close/open).
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -99,11 +102,13 @@ say(const char *format, ...)
  */
 struct protocol {
 	uint8_t sense_on, clear_events, one_event;
+	uint8_t sense_off;                      /* 0: not known (the S9's: its display is never switched off) */
 	bool old;
 };
 
 static const struct protocol proto_y761 = { .sense_on = 0x10, .clear_events = 0x62, .one_event = 0x60 };
-static const struct protocol proto_y661 = { .sense_on = 0x40, .clear_events = 0x60, .one_event = 0x71, .old = true };
+static const struct protocol proto_y661 = { .sense_on = 0x40, .clear_events = 0x60, .one_event = 0x71, .sense_off = 0x41,
+	.old = true };
 
 struct board {
 	const char *name;
@@ -421,6 +426,32 @@ read_events(void)
 	}
 }
 
+/* the display's state as its driver last said it, taken by the polling thread (the only one on the bus) */
+static volatile bool want_dark;
+
+void
+hakios_s6sy761_display(bool on)
+{
+	want_dark = !on;
+}
+
+static void
+display_changed(bool dark)
+{
+	uint32_t error;
+
+	all_up();
+	if (dark) {
+		error = chip_write(board->proto->sense_off, NULL, 0);
+		say("s6sy761: the display off: sense off%s\n", error ? " FAILED" : "");
+		return;
+	}
+	error = chip_write(board->proto->sense_on, NULL, 0);
+	delay_for_interval(10, NSEC_PER_MSEC);
+	(void)chip_write(board->proto->clear_events, NULL, 0);
+	say("s6sy761: the display on: sense on%s\n", error ? " FAILED" : "");
+}
+
 static bool
 irq_low(void)
 {
@@ -494,6 +525,7 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 {
 	uint32_t steps = (uint32_t)(uintptr_t)arg, step = 0, error;
 	uint8_t answer[16];
+	bool dark = false;
 
 	say("s6sy761: step 1 (%s): map the HSI2C, its clocks and mode, the pins\n", board->name);
 	irq_bank = ml_io_map((vm_offset_t)(board->irq_pa & ~0xfffULL), 0x1000);
@@ -585,6 +617,14 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 	for (unsigned tick = 1;; tick++) {
 		uint64_t began = mach_absolute_time(), events = stats.events, round, slept;
 
+		if (board->proto->sense_off != 0 && want_dark != dark) {
+			dark = want_dark;
+			display_changed(dark);
+		}
+		if (dark) {
+			delay_for_interval(100, NSEC_PER_MSEC);
+			continue;
+		}
 		timing.i2c = timing.post = 0;
 		for (int rounds = 0; rounds < 4 && irq_low(); rounds++) {
 			read_events();

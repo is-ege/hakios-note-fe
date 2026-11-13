@@ -46,6 +46,12 @@
  * refresh. Switched in the watcher at a frame's end, the DECON idle and its trigger masked; put back if a frame does
  * not end or underruns. No PLL, voltage, DSI or panel write. (Samsung's S5E8890-cmu.c, pwrcal-cmu.c.)
  *
+ * The display off while iOS has it off (hakios_scanout_power: the lock screen's blank, and once at start-up): the
+ * frame being sent finished and the trigger left masked, as for a switch (lcd_switch), then the panel's display off
+ * (hakios_s6e3ha5_display). No frame is sent and nothing reads the buffers meanwhile, so a flip counts as taken at once and
+ * the first frame after shows it. Back on: the trigger unmasked, display on after a frame. The DECON's clocks and the
+ * DSIM are left running. The touch chip senses nothing meanwhile (hakios_s6sy761_display).
+ *
  * Its status, watched from the probe on (nothing here takes the DECON's interrupt, which stays off at the GIC; its
  * frame-done and FIFO-level bits enabled in INTERRUPT_ENABLE only so that INTERRUPT_PENDING shows them): the frames sent
  * to the panel (the refreshes, hakios_scanout_refreshes) and the underruns (FIFO level, Samsung's decon_f_irq_handler
@@ -64,12 +70,14 @@
  */
 #include <stdarg.h>
 #include <kern/clock.h>
+#include <kern/locks.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos8890_mem.h>
+#include <sys/hakios.input.h>
 #include <sys/hakios.viewport.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -90,6 +98,7 @@ int hakios_scanout_carve(uint64_t bytes, uint64_t *phys);
 void hakios_scanout_uncarve(uint64_t phys);
 int hakios_scanout_carved(uint64_t phys);
 int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
+int hakios_scanout_power(int on);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -204,6 +213,8 @@ static uint32_t panel_w, panel_h;
 static uint32_t boot_src, boot_img, boot_scaled, boot_pixels;
 static uint32_t lcd_boot[LCD_REGS];      /* lcd_reg's values as S-Boot left them */
 static bool hold;                       /* the watcher leaves the trigger masked at a frame's end */
+static bool dark;                       /* the display off: no frames, the panel's display off */
+static lck_mtx_t *switch_lock;          /* a window switch (attach, detach) and the display off or on, one at a time */
 static uint64_t buffers[4];
 static unsigned nbuffers;
 static uint32_t scan_rowbytes, shown_rowbytes;  /* mode 2: the buffers' row, and the row of what G1 reads now */
@@ -222,6 +233,7 @@ static uint32_t vclk_was[4];            /* S-Boot's TOP divider, TOP gate, DISP0
 extern void hakios_s6e3ha5_boot_reads(void);
 extern const uint8_t *hakios_s6e3ha5_pps(uint32_t width);
 extern bool hakios_s6e3ha5_resolution(uint32_t width);
+extern bool hakios_s6e3ha5_display(bool on);
 
 extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation, void *parameter, integer_t priority,
     thread_t *new_thread);
@@ -299,6 +311,11 @@ watch(__unused void *arg, __unused wait_result_t wr_)
 	for (unsigned tick = 1;; tick++) {
 		uint32_t p = rd(decon, INTERRUPT_PENDING) & (INT_VSTATUS | INT_FRAME_DONE | INT_FIFO_LEVEL);
 
+		if (dark) {
+			last_done = tick;       /* (no frame is due: VCLK0's trial does not count the time) */
+			IOSleep(100);
+			continue;
+		}
 		if (p != 0) {
 			wr(decon, INTERRUPT_PENDING, p);
 			now = mach_absolute_time();
@@ -377,6 +394,7 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 		return probed > 0 ? 0 : -1;
 	}
 	probed = -1;
+	switch_lock = lck_mtx_alloc_init(lck_grp_alloc_init("exynos8890_decon", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
 	if (fb_phys != EXYNOS8890_MEM_FB_PA || width != 1440 || height != 2560 || rowbytes != 1440 * 4) {
 		say("exynos8890_decon: the boot framebuffer is at %#llx, %ux%u, %u bytes a row: not S-Boot's (0xd8000000, "
 		    "1440x2560): the DECON is left alone\n", fb_phys, width, height, rowbytes);
@@ -723,9 +741,9 @@ attach_panel_scaler(uint32_t pa, uint32_t width, uint32_t height, uint32_t rowby
 	return 0;
 }
 
-int
-hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t width, uint32_t height, uint32_t rowbytes,
-    unsigned shown)
+/* (hakios_scanout_attach's, with the switch lock held: it returns from many places) */
+static int
+attach(int want, const uint64_t *phys, unsigned count, uint32_t width, uint32_t height, uint32_t rowbytes, unsigned shown)
 {
 	say("exynos8890_decon: attach: %s asked for, %u buffers of %ux%u (%u bytes a row), %u drawn\n",
 	    want == 1 ? "flips (fb_flip)" : want == 2 ? "the panel's scaler (fb_dpp)" : "nothing", count, width, height, rowbytes,
@@ -764,6 +782,21 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
 }
 
 int
+hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t width, uint32_t height, uint32_t rowbytes,
+    unsigned shown)
+{
+	int r;
+
+	if (switch_lock == NULL) {
+		return -1;
+	}
+	lck_mtx_lock(switch_lock);
+	r = attach(want, phys, count, width, height, rowbytes, shown);
+	lck_mtx_unlock(switch_lock);
+	return r;
+}
+
+int
 hakios_scanout_flip(unsigned index)
 {
 	if (mode == 0 || index >= nbuffers) {
@@ -781,7 +814,7 @@ hakios_scanout_flip(unsigned index)
 int
 hakios_scanout_latched(void)
 {
-	return probed > 0 && (rd(vpp, VG_PINGPONG) & PINGPONG_UPDATE) == 0 && rd(vpp, VG_SHA_BASE_Y) == flipped;
+	return probed > 0 && (dark || ((rd(vpp, VG_PINGPONG) & PINGPONG_UPDATE) == 0 && rd(vpp, VG_SHA_BASE_Y) == flipped));
 }
 
 uint32_t
@@ -796,6 +829,7 @@ hakios_scanout_detach(const char *why)
 	if (probed <= 0 || mode == 0) {
 		return;
 	}
+	lck_mtx_lock(switch_lock);
 	say("exynos8890_decon: back to the boot window and buffer (%s)\n", why);
 	if (mode == 2) {
 		const struct hakios_viewport full = { 0, 0, panel_w, panel_h };
@@ -809,6 +843,55 @@ hakios_scanout_detach(const char *why)
 		IOSleep(1);
 	}
 	mode = 0;
+	lck_mtx_unlock(switch_lock);
+}
+
+/* iOS's power change (MiniIOMobileFramebuffer.cpp): 0 the display off, else on; see the head of the file */
+int
+hakios_scanout_power(int on)
+{
+	uint32_t before, under;
+	bool shown;
+
+	if (probed <= 0) {
+		return -1;
+	}
+	lck_mtx_lock(switch_lock);
+	if (dark == !on) {
+		lck_mtx_unlock(switch_lock);
+		return 0;
+	}
+	if (!on) {
+		before = refreshes;
+		hold = true;
+		for (unsigned ms = 0; ms < 100 && refreshes == before; ms++) {
+			IOSleep(1);
+		}
+		wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) | TRIG_HW_MASK);
+		dark = true;
+		hakios_s6sy761_display(false);
+		if (hakios_s6e3ha5_display(false)) {
+			say("exynos8890_decon: display off: no frames after frame %u%s\n", refreshes,
+			    refreshes == before ? " (none ended in 100 ms)" : "");
+			lck_mtx_unlock(switch_lock);
+			return 0;
+		}
+		say("exynos8890_decon: display off: the panel did not take it: frames go on\n");
+	}
+	before = refreshes;
+	under = underruns;
+	dark = false;
+	hold = false;
+	wr(decon, TRIG_CONTROL, (rd(decon, TRIG_CONTROL) & ~TRIG_HW_MASK) | TRIG_AUTO_MASK);
+	for (unsigned ms = 0; ms < 100 && refreshes == before; ms++) {
+		IOSleep(1);
+	}
+	shown = hakios_s6e3ha5_display(true);
+	hakios_s6sy761_display(true);
+	say("exynos8890_decon: display on: %s; display on (29) %s, %u underruns\n", refreshes != before ? "a frame sent" :
+	    "NO frame ended in 100 ms", shown ? "sent" : "NOT sent", underruns - under);
+	lck_mtx_unlock(switch_lock);
+	return on ? 0 : -1;
 }
 
 int

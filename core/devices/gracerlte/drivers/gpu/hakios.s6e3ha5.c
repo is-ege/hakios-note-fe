@@ -18,6 +18,12 @@
  * its 1440 x 2560, or of 1440 x 2560 again. The DSIM's two slice sizes; then, between the level-2 key, the columns
  * and rows (2A, 2B), B0 08, F2 04 B0, the DSC picture parameters of that size (a PPS packet) and the scaler (BA 02 on,
  * BA 03 from it back); then the DSIM's own resolution (a third of the width: DSC), with its standby off meanwhile.
+ *
+ * Dark while iOS has the display off (hakios_s6e3ha5_display, for the DECON's driver while it sends no frame): display
+ * off (28), and display on (29) once a frame has been sent (s6e3ha5_wqhd_displayon). Not Samsung's sleep-in (10): asleep,
+ * the panel stops the timing the touch chip runs on, which then saw fingers nobody put down (run 20261112T184949; none
+ * with the panel left awake, 190010), and Samsung's settings after sleep-out (35, ED, B9, CE) took the panel off its
+ * scaler (185335).
  */
 #include <stdarg.h>
 #include <stdint.h>
@@ -236,6 +242,21 @@ hakios_s6e3ha5_boot_reads(void)
 	if (PE_parse_boot_argn("panel_brightness", &level, sizeof(level))) {
 		(void)panel_set((int)level);
 	}
+}
+
+bool
+hakios_s6e3ha5_display(bool on)
+{
+	static const uint8_t display_off[] = { 0x28 }, display_on[] = { 0x29 };
+	bool ok;
+
+	if (dsim == 0) {
+		return false;
+	}
+	lck_mtx_lock(panel_lock);
+	ok = on ? dsim_send(display_on, sizeof(display_on)) : dsim_send(display_off, sizeof(display_off));
+	lck_mtx_unlock(panel_lock);
+	return ok;
 }
 
 static void
